@@ -62,6 +62,12 @@ The current development path is:
 
 This moves the implementation closer to a truly deep transparent neuro-fuzzy architecture.
 
+The implementation also supports **rule re-estimation from a trained reference model**:
+after end-to-end fitting, the hidden and decision rule bases can be rebuilt on the
+stabilized concept space produced by the trained model, and then stage-wise pretrained again.
+This should be treated as a stronger data-driven reinitialization step, not as a guaranteed
+improvement over every already fine-tuned reference model.
+
 ## Explainability
 
 The implementation now provides two complementary views:

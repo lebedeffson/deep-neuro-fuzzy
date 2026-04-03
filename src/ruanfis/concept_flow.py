@@ -97,6 +97,33 @@ class PathSampleConceptFlow:
     hidden_rule_paths: tuple[HiddenBlockRulePathFlow, ...]
 
 
+@dataclass(frozen=True)
+class RuleChainContribution:
+    rule_name: str
+    rule_text: str
+    attribution_kind: str
+    normalized_weight: float
+    output_contribution: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class RuleChainBlockFlow:
+    stage_name: str
+    block_name: str
+    attribution_kind: str
+    top_rule_contributions: tuple[RuleChainContribution, ...]
+
+
+@dataclass(frozen=True)
+class SampleRuleChainFlow:
+    sample_index: int
+    inputs: tuple[float, ...]
+    prediction: tuple[float, ...]
+    bias_contribution: tuple[float, ...]
+    exact_final_rule_contributions: tuple[RuleChainBlockFlow, ...]
+    upstream_path_rule_contributions: tuple[RuleChainBlockFlow, ...]
+
+
 def _concept_sources(model: DeepFuzzyFeatureModel) -> tuple[tuple[str | None, str | None, str], ...]:
     if not model.stages:
         return tuple((None, None, variable.name) for variable in model.decision_layer.variables)
@@ -354,6 +381,119 @@ def analyze_path_concept_flow(
     return tuple(sample_flows)
 
 
+def analyze_rule_chain_flow(
+    model: DeepFuzzyFeatureModel,
+    inputs: Tensor,
+    top_k_rules: int = 2,
+) -> tuple[SampleRuleChainFlow, ...]:
+    if top_k_rules <= 0:
+        raise ValueError("top_k_rules must be positive.")
+
+    predictions, trace = model.forward_with_trace(inputs)
+    path_flows = analyze_path_concept_flow(model, inputs, top_k_rules=top_k_rules)
+    decision_weight_tensor = model.decision_layer.rule_weights.detach()
+    decision_bias_tensor = model.decision_layer.rule_bias.detach()
+
+    if model.stages:
+        last_stage = model.stages[-1]
+        last_stage_trace = trace.stage_traces[-1]
+        final_stage_blocks = {(last_stage.name, connected_block.block.name): connected_block.block for connected_block in last_stage.blocks}
+    else:
+        last_stage = None
+        last_stage_trace = None
+        final_stage_blocks = {}
+
+    sample_flows: list[SampleRuleChainFlow] = []
+    for sample_index in range(inputs.size(0)):
+        decision_trace = trace.decision_trace
+        normalized_rule_weights = decision_trace.normalized_rule_weights[sample_index]
+        bias_contribution = (
+            normalized_rule_weights.unsqueeze(-1) * decision_bias_tensor
+        ).sum(dim=0)
+        decision_coefficients = (
+            normalized_rule_weights.view(-1, 1, 1) * decision_weight_tensor
+        ).sum(dim=0)
+
+        exact_final_rule_contributions: list[RuleChainBlockFlow] = []
+        if last_stage is not None and last_stage_trace is not None:
+            concept_offset = 0
+            for connected_block, block_trace in zip(last_stage.blocks, last_stage_trace.block_traces, strict=True):
+                block = connected_block.block
+                concept_slice = slice(concept_offset, concept_offset + block.output_dim)
+                concept_offset += block.output_dim
+
+                local_rule_contributions = (
+                    block_trace.normalized_rule_weights[sample_index].unsqueeze(-1)
+                    * block_trace.rule_outputs[sample_index]
+                )
+                rule_output_contributions = torch.matmul(
+                    local_rule_contributions,
+                    decision_coefficients[concept_slice],
+                )
+                contribution_norm = rule_output_contributions.abs().sum(dim=1)
+                _, top_indices = contribution_norm.topk(k=min(top_k_rules, contribution_norm.numel()))
+
+                top_rules: list[RuleChainContribution] = []
+                for rule_index in top_indices.tolist():
+                    top_rules.append(
+                        RuleChainContribution(
+                            rule_name=block_trace.rule_names[rule_index],
+                            rule_text=block.describe_rule(rule_index),
+                            attribution_kind="exact",
+                            normalized_weight=float(block_trace.normalized_rule_weights[sample_index, rule_index].item()),
+                            output_contribution=tuple(
+                                float(value) for value in rule_output_contributions[rule_index].tolist()
+                            ),
+                        )
+                    )
+
+                exact_final_rule_contributions.append(
+                    RuleChainBlockFlow(
+                        stage_name=last_stage.name,
+                        block_name=block.name,
+                        attribution_kind="exact",
+                        top_rule_contributions=tuple(top_rules),
+                    )
+                )
+
+        upstream_path_rule_contributions: list[RuleChainBlockFlow] = []
+        if model.stages:
+            final_stage_key = last_stage.name if last_stage is not None else None
+            for block_flow in path_flows[sample_index].hidden_rule_paths:
+                if block_flow.stage_name == final_stage_key:
+                    continue
+                upstream_path_rule_contributions.append(
+                    RuleChainBlockFlow(
+                        stage_name=block_flow.stage_name,
+                        block_name=block_flow.block_name,
+                        attribution_kind="path",
+                        top_rule_contributions=tuple(
+                            RuleChainContribution(
+                                rule_name=rule.rule_name,
+                                rule_text=rule.rule_text,
+                                attribution_kind="path",
+                                normalized_weight=rule.normalized_weight,
+                                output_contribution=rule.path_contribution,
+                            )
+                            for rule in block_flow.top_rule_path_contributions
+                        ),
+                    )
+                )
+
+        sample_flows.append(
+            SampleRuleChainFlow(
+                sample_index=sample_index,
+                inputs=tuple(float(value) for value in inputs[sample_index].tolist()),
+                prediction=tuple(float(value) for value in predictions[sample_index].tolist()),
+                bias_contribution=tuple(float(value) for value in bias_contribution.tolist()),
+                exact_final_rule_contributions=tuple(exact_final_rule_contributions),
+                upstream_path_rule_contributions=tuple(upstream_path_rule_contributions),
+            )
+        )
+
+    return tuple(sample_flows)
+
+
 def format_concept_flows(flows: tuple[SampleConceptFlow, ...], decimals: int = 4) -> str:
     lines: list[str] = []
     for flow in flows:
@@ -430,5 +570,35 @@ def format_path_concept_flows(flows: tuple[PathSampleConceptFlow, ...], decimals
                     f"weight={rule.normalized_weight:.{decimals}f} | "
                     f"local={tuple(round(value, decimals) for value in rule.local_contributions)} | "
                     f"path={tuple(round(value, decimals) for value in rule.path_contribution)}"
+                )
+    return "\n".join(lines)
+
+
+def format_rule_chain_flows(flows: tuple[SampleRuleChainFlow, ...], decimals: int = 4) -> str:
+    lines: list[str] = []
+    for flow in flows:
+        lines.append(f"SAMPLE {flow.sample_index}")
+        lines.append(f"  inputs: {tuple(round(value, decimals) for value in flow.inputs)}")
+        lines.append(f"  prediction: {tuple(round(value, decimals) for value in flow.prediction)}")
+        lines.append(f"  bias contribution: {tuple(round(value, decimals) for value in flow.bias_contribution)}")
+        lines.append("  exact final-stage hidden rule contributions:")
+        for block_flow in flow.exact_final_rule_contributions:
+            lines.append(f"    {block_flow.stage_name}/{block_flow.block_name} [{block_flow.attribution_kind}]")
+            for rule in block_flow.top_rule_contributions:
+                lines.append(
+                    "      rule: "
+                    f"{rule.rule_name} | {rule.rule_text} | "
+                    f"weight={rule.normalized_weight:.{decimals}f} | "
+                    f"output={tuple(round(value, decimals) for value in rule.output_contribution)}"
+                )
+        lines.append("  upstream path-based hidden rule contributions:")
+        for block_flow in flow.upstream_path_rule_contributions:
+            lines.append(f"    {block_flow.stage_name}/{block_flow.block_name} [{block_flow.attribution_kind}]")
+            for rule in block_flow.top_rule_contributions:
+                lines.append(
+                    "      rule: "
+                    f"{rule.rule_name} | {rule.rule_text} | "
+                    f"weight={rule.normalized_weight:.{decimals}f} | "
+                    f"output={tuple(round(value, decimals) for value in rule.output_contribution)}"
                 )
     return "\n".join(lines)

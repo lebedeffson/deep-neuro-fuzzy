@@ -1,4 +1,5 @@
 import torch
+import pytest
 from torch import nn
 
 from ruanfis.bootstrap import (
@@ -8,6 +9,7 @@ from ruanfis.bootstrap import (
     build_stagewise_pretrained_hierarchical_model,
     initialize_decision_layer_from_samples,
     initialize_transparent_block_from_samples,
+    reestimate_hierarchical_model_rule_base,
 )
 from ruanfis.builders import (
     DecisionLayerConfig,
@@ -19,6 +21,7 @@ from ruanfis.builders import (
 from ruanfis.blocks import SugenoDecisionLayer, TransparentFuzzyBlock
 from ruanfis.memberships import FuzzyVariable, GaussianMembership
 from ruanfis.rules import Antecedent, RuleBase, RuleSpec
+from ruanfis.trainer import FuzzyTrainer, TrainingConfig
 
 
 def _var2(name: str) -> FuzzyVariable:
@@ -332,3 +335,153 @@ def test_stagewise_refinement_rounds_do_not_degrade_best_model() -> None:
     refined_loss = loss_fn(refined_model(inputs), targets).item()
 
     assert refined_loss <= one_round_loss + 1e-6
+
+
+def test_reestimate_rule_base_rejects_incompatible_reference_model() -> None:
+    config = HierarchicalModelConfig(
+        input_dim=4,
+        stages=(),
+        decision_layer=DecisionLayerConfig(
+            name="decision",
+            variables=(_var2("x0"), _var2("x1"), _var2("x2"), _var2("x3")),
+            output_dim=1,
+            output_names=("target",),
+            max_rule_arity=2,
+            max_rules=4,
+        ),
+    )
+    incompatible_reference = build_hierarchical_model(
+        HierarchicalModelConfig(
+            input_dim=3,
+            stages=(),
+            decision_layer=DecisionLayerConfig(
+                name="decision",
+                variables=(_var2("x0"), _var2("x1"), _var2("x2")),
+                output_dim=1,
+                output_names=("target",),
+                max_rule_arity=2,
+                max_rules=4,
+            ),
+        ),
+        sample_inputs=torch.rand(32, 3),
+    )
+
+    with pytest.raises(ValueError, match="input_dim"):
+        reestimate_hierarchical_model_rule_base(
+            config,
+            incompatible_reference,
+            sample_inputs=torch.rand(32, 4),
+            sample_targets=torch.rand(32, 1),
+        )
+
+
+def test_reestimated_rule_base_from_trained_reference_improves_over_bootstrap() -> None:
+    torch.manual_seed(31)
+    inputs = torch.rand(320, 4)
+    targets = (
+        0.45 * torch.sin(torch.pi * inputs[:, 0:1] * inputs[:, 1:2])
+        + 0.30 * (inputs[:, 2:3] * inputs[:, 3:4])
+        + 0.15 * inputs[:, 0:1]
+        + 0.10 * inputs[:, 2:3]
+    )
+    config = HierarchicalModelConfig(
+        input_dim=4,
+        stages=(
+            StageConfig(
+                name="stage_1",
+                blocks=(
+                    TransparentBlockConfig(
+                        name="left_block",
+                        input_indices=(0, 1),
+                        variables=(_var3("x0"), _var3("x1")),
+                        n_concepts=2,
+                        concept_names=("left_signal", "left_bias"),
+                        max_rule_arity=2,
+                        max_rules=4,
+                        rule_generation_mode="prototype",
+                    ),
+                    TransparentBlockConfig(
+                        name="right_block",
+                        input_indices=(2, 3),
+                        variables=(_var3("x2"), _var3("x3")),
+                        n_concepts=2,
+                        concept_names=("right_signal", "right_bias"),
+                        max_rule_arity=2,
+                        max_rules=4,
+                        rule_generation_mode="prototype",
+                    ),
+                ),
+            ),
+        ),
+        decision_layer=DecisionLayerConfig(
+            name="decision",
+            variables=(
+                _var2("left_signal"),
+                _var2("left_bias"),
+                _var2("right_signal"),
+                _var2("right_bias"),
+            ),
+            output_dim=1,
+            output_names=("target",),
+            max_rule_arity=2,
+            max_rules=8,
+        ),
+    )
+    pretraining = StagewisePretrainingConfig(
+        task_type="regression",
+        epochs_per_stage=16,
+        decision_epochs=12,
+        refinement_rounds=1,
+        learning_rate=0.02,
+        batch_size=64,
+        shuffle=False,
+    )
+
+    stagewise_model = build_stagewise_pretrained_hierarchical_model(
+        config,
+        sample_inputs=inputs,
+        sample_targets=targets,
+        bootstrap_config=BootstrapConfig(decision_task_type="regression"),
+        pretraining_config=pretraining,
+    )
+    bootstrap_model = build_bootstrapped_hierarchical_model(
+        config,
+        sample_inputs=inputs,
+        sample_targets=targets,
+        bootstrap_config=BootstrapConfig(decision_task_type="regression"),
+    )
+    loss_fn = nn.MSELoss()
+    bootstrap_loss = loss_fn(bootstrap_model(inputs), targets).item()
+
+    trainer = FuzzyTrainer(
+        stagewise_model,
+        TrainingConfig(
+            task_type="regression",
+            max_epochs=80,
+            learning_rate=0.02,
+            patience=15,
+            batch_size=64,
+            shuffle=False,
+        ),
+    )
+    trainer.fit(inputs, targets, inputs, targets)
+
+    reestimated_model = reestimate_hierarchical_model_rule_base(
+        config,
+        stagewise_model,
+        sample_inputs=inputs,
+        sample_targets=targets,
+        bootstrap_config=BootstrapConfig(decision_task_type="regression"),
+        pretraining_config=StagewisePretrainingConfig(
+            task_type="regression",
+            epochs_per_stage=16,
+            decision_epochs=12,
+            refinement_rounds=2,
+            learning_rate=0.02,
+            batch_size=64,
+            shuffle=False,
+        ),
+    )
+    reestimated_loss = loss_fn(reestimated_model(inputs), targets).item()
+
+    assert reestimated_loss <= bootstrap_loss + 1e-6

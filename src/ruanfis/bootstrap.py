@@ -200,6 +200,24 @@ def _compute_stage_reference_inputs(
     return tuple(reference_inputs)
 
 
+def _validate_reference_model_compatibility(
+    config: HierarchicalModelConfig,
+    reference_model: DeepFuzzyFeatureModel,
+) -> None:
+    if reference_model.input_dim is not None and reference_model.input_dim != config.input_dim:
+        raise ValueError(
+            f"reference_model expects input_dim={reference_model.input_dim}, but config uses {config.input_dim}."
+        )
+    if len(reference_model.stages) != len(config.stages):
+        raise ValueError(
+            "reference_model and config must contain the same number of hidden stages for rule re-estimation."
+        )
+    if reference_model.decision_layer.input_dim != len(config.decision_layer.variables):
+        raise ValueError(
+            "reference_model decision layer input dimension does not match the provided config."
+        )
+
+
 def _support_to_gate_probabilities(
     support: Tensor,
     *,
@@ -404,11 +422,32 @@ def build_stagewise_pretrained_hierarchical_model(
             f"Unsupported task_type={pretrain.task_type!r}. Expected 'regression' or 'binary_classification'."
         )
 
+    return _build_stagewise_from_reference(
+        config,
+        current_samples,
+        target_matrix,
+        training_targets,
+        bootstrap,
+        pretrain,
+        initial_reference_model=None,
+    )
+
+
+def _build_stagewise_from_reference(
+    config: HierarchicalModelConfig,
+    current_samples: Tensor,
+    target_matrix: Tensor,
+    training_targets: Tensor,
+    bootstrap: BootstrapConfig,
+    pretrain: StagewisePretrainingConfig,
+    *,
+    initial_reference_model: DeepFuzzyFeatureModel | None,
+) -> DeepFuzzyFeatureModel:
     best_model: DeepFuzzyFeatureModel | None = None
     best_score = float("inf")
-    reference_model: DeepFuzzyFeatureModel | None = None
+    reference_model: DeepFuzzyFeatureModel | None = initial_reference_model
 
-    for refinement_round in range(pretrain.refinement_rounds):
+    for _ in range(pretrain.refinement_rounds):
         reference_inputs = None if reference_model is None else _compute_stage_reference_inputs(reference_model, current_samples)
         round_inputs = current_samples
         stages: list[FuzzyStage] = []
@@ -454,6 +493,49 @@ def build_stagewise_pretrained_hierarchical_model(
     return best_model
 
 
+def reestimate_hierarchical_model_rule_base(
+    config: HierarchicalModelConfig,
+    reference_model: DeepFuzzyFeatureModel,
+    sample_inputs: Tensor,
+    sample_targets: Tensor,
+    bootstrap_config: BootstrapConfig | None = None,
+    pretraining_config: StagewisePretrainingConfig | None = None,
+) -> DeepFuzzyFeatureModel:
+    bootstrap = bootstrap_config or BootstrapConfig()
+    pretrain = pretraining_config or StagewisePretrainingConfig(task_type=bootstrap.decision_task_type)
+    if pretrain.refinement_rounds <= 0:
+        raise ValueError("refinement_rounds must be positive.")
+
+    _validate_reference_model_compatibility(config, reference_model)
+
+    current_samples = _to_feature_matrix(sample_inputs, config.input_dim, name="sample_inputs")
+    target_matrix = _to_target_matrix(sample_targets, config.decision_layer.output_dim, name="sample_targets")
+    if target_matrix.size(0) != current_samples.size(0):
+        raise ValueError("sample_inputs and sample_targets must contain the same number of samples.")
+
+    if pretrain.task_type == "binary_classification":
+        clip = float(pretrain.classification_target_clip)
+        if not 0.0 < clip < 0.5:
+            raise ValueError("classification_target_clip must lie strictly between 0 and 0.5.")
+        training_targets = target_matrix.clamp(clip, 1.0 - clip)
+    elif pretrain.task_type == "regression":
+        training_targets = target_matrix
+    else:
+        raise ValueError(
+            f"Unsupported task_type={pretrain.task_type!r}. Expected 'regression' or 'binary_classification'."
+        )
+
+    return _build_stagewise_from_reference(
+        config,
+        current_samples,
+        target_matrix,
+        training_targets,
+        bootstrap,
+        pretrain,
+        initial_reference_model=reference_model,
+    )
+
+
 def build_bootstrapped_shallow_model(
     config: ShallowFuzzyModelConfig,
     sample_inputs: Tensor,
@@ -477,6 +559,24 @@ def build_stagewise_pretrained_shallow_model(
 ) -> DeepFuzzyFeatureModel:
     return build_stagewise_pretrained_hierarchical_model(
         config.as_hierarchical_config(),
+        sample_inputs=sample_inputs,
+        sample_targets=sample_targets,
+        bootstrap_config=bootstrap_config,
+        pretraining_config=pretraining_config,
+    )
+
+
+def reestimate_shallow_model_rule_base(
+    config: ShallowFuzzyModelConfig,
+    reference_model: DeepFuzzyFeatureModel,
+    sample_inputs: Tensor,
+    sample_targets: Tensor,
+    bootstrap_config: BootstrapConfig | None = None,
+    pretraining_config: StagewisePretrainingConfig | None = None,
+) -> DeepFuzzyFeatureModel:
+    return reestimate_hierarchical_model_rule_base(
+        config.as_hierarchical_config(),
+        reference_model=reference_model,
         sample_inputs=sample_inputs,
         sample_targets=sample_targets,
         bootstrap_config=bootstrap_config,
