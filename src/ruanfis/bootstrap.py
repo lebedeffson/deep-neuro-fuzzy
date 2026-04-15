@@ -57,6 +57,16 @@ class StagewisePretrainingConfig:
     classification_target_clip: float = 0.05
 
 
+def _resolve_device(
+    device: str | torch.device | None,
+    *,
+    fallback: torch.device,
+) -> torch.device:
+    if device is None:
+        return fallback
+    return torch.device(device)
+
+
 def _validate_probability_range(low: float, high: float) -> None:
     if not 0.0 < low < 1.0:
         raise ValueError("Bootstrap probabilities must lie strictly between 0 and 1.")
@@ -66,17 +76,30 @@ def _validate_probability_range(low: float, high: float) -> None:
         raise ValueError("The lower bootstrap probability must be smaller than the higher probability.")
 
 
-def _to_feature_matrix(inputs: Tensor, expected_dim: int, *, name: str) -> Tensor:
+def _to_feature_matrix(
+    inputs: Tensor,
+    expected_dim: int,
+    *,
+    name: str,
+    device: str | torch.device | None = None,
+) -> Tensor:
     if inputs.ndim != 2:
         raise ValueError(f"{name} must have shape [samples, features], got {tuple(inputs.shape)}.")
     if inputs.size(0) <= 0:
         raise ValueError(f"{name} must contain at least one sample.")
     if inputs.size(1) != expected_dim:
         raise ValueError(f"{name} must contain {expected_dim} features, got {inputs.size(1)}.")
-    return inputs.detach().cpu().to(dtype=torch.float32)
+    target_device = _resolve_device(device, fallback=inputs.device)
+    return inputs.detach().to(device=target_device, dtype=torch.float32)
 
 
-def _to_target_matrix(targets: Tensor, output_dim: int, *, name: str) -> Tensor:
+def _to_target_matrix(
+    targets: Tensor,
+    output_dim: int,
+    *,
+    name: str,
+    device: str | torch.device | None = None,
+) -> Tensor:
     if targets.ndim == 1:
         targets = targets.unsqueeze(-1)
     if targets.ndim != 2:
@@ -85,7 +108,8 @@ def _to_target_matrix(targets: Tensor, output_dim: int, *, name: str) -> Tensor:
         raise ValueError(f"{name} must contain at least one sample.")
     if targets.size(1) != output_dim:
         raise ValueError(f"{name} must contain {output_dim} outputs, got {targets.size(1)}.")
-    return targets.detach().cpu().to(dtype=torch.float32)
+    target_device = _resolve_device(device, fallback=targets.device)
+    return targets.detach().to(device=target_device, dtype=torch.float32)
 
 
 def _task_loss_from_predictions(task_type: str, predictions: Tensor, targets: Tensor) -> Tensor:
@@ -100,7 +124,11 @@ def _iter_batches(inputs: Tensor, targets: Tensor, batch_size: int | None, shuff
     effective_batch_size = inputs.size(0) if batch_size is None else batch_size
     if effective_batch_size <= 0:
         raise ValueError("batch_size must be positive when provided.")
-    indices = torch.randperm(inputs.size(0)) if shuffle else torch.arange(inputs.size(0))
+    indices = (
+        torch.randperm(inputs.size(0), device=inputs.device)
+        if shuffle
+        else torch.arange(inputs.size(0), device=inputs.device)
+    )
     for start in range(0, inputs.size(0), effective_batch_size):
         batch_indices = indices[start : start + effective_batch_size]
         yield inputs.index_select(0, batch_indices), targets.index_select(0, batch_indices)
@@ -139,7 +167,10 @@ def _fit_stage_with_linear_head(
     config: StagewisePretrainingConfig,
 ) -> None:
     stage.train()
-    head = nn.Linear(stage.output_dim, targets.size(1))
+    head = nn.Linear(stage.output_dim, targets.size(1)).to(
+        device=stage_inputs.device,
+        dtype=stage_inputs.dtype,
+    )
     optimizer = torch.optim.Adam(
         list(stage.parameters()) + list(head.parameters()),
         lr=config.learning_rate,
@@ -169,6 +200,7 @@ def _fit_decision_layer_on_features(
     targets: Tensor,
     config: StagewisePretrainingConfig,
 ) -> None:
+    layer.to(device=features.device, dtype=features.dtype)
     layer.train()
     optimizer = torch.optim.Adam(layer.parameters(), lr=config.learning_rate)
     for _ in range(config.decision_epochs):
@@ -230,7 +262,7 @@ def _support_to_gate_probabilities(
     if support.numel() <= 0:
         raise ValueError("Rule support must not be empty.")
 
-    support = support.detach().cpu().to(dtype=torch.float32)
+    support = support.detach().to(dtype=torch.float32)
     min_support = float(support.min().item())
     max_support = float(support.max().item())
     if max_support - min_support < 1e-12:
@@ -252,8 +284,8 @@ def _cluster_rule_profiles(
         raise ValueError("rule_profiles must contain at least one rule.")
     cluster_count = min(max(int(n_clusters), 1), n_rules)
 
-    normalized_profiles = F.normalize(rule_profiles.detach().cpu().to(dtype=torch.float32), p=2.0, dim=1)
-    support = support.detach().cpu().to(dtype=torch.float32)
+    normalized_profiles = F.normalize(rule_profiles.detach().to(dtype=torch.float32), p=2.0, dim=1)
+    support = support.detach().to(dtype=torch.float32)
 
     first_center = int(torch.argmax(support).item())
     center_indices = [first_center]
@@ -302,6 +334,7 @@ def initialize_transparent_block_from_samples(
             (block.n_rules, block.n_concepts),
             fill_value=bootstrap.hidden_low,
             dtype=block.raw_consequents.dtype,
+            device=block.raw_consequents.device,
         )
         for rule_index, concept_index in enumerate(assignments.tolist()):
             template[rule_index, concept_index] = bootstrap.hidden_high
@@ -333,7 +366,12 @@ def initialize_decision_layer_from_samples(
             layer.rule_weights.zero_()
             return
 
-        targets = _to_target_matrix(sample_targets, layer.output_dim, name="sample_targets")
+        targets = _to_target_matrix(
+            sample_targets,
+            layer.output_dim,
+            name="sample_targets",
+            device=local_inputs.device,
+        )
         if targets.size(0) != local_inputs.size(0):
             raise ValueError("sample_inputs and sample_targets must contain the same number of samples.")
 
@@ -350,7 +388,18 @@ def initialize_decision_layer_from_samples(
                 "Expected 'regression' or 'binary_classification'."
             )
 
-        design = torch.cat([torch.ones(local_inputs.size(0), 1), local_inputs], dim=1)
+        design = torch.cat(
+            [
+                torch.ones(
+                    local_inputs.size(0),
+                    1,
+                    device=local_inputs.device,
+                    dtype=local_inputs.dtype,
+                ),
+                local_inputs,
+            ],
+            dim=1,
+        )
         solution = torch.linalg.lstsq(design, regression_targets).solution
         solution = solution[: design.size(1)]
         bias = solution[0]
@@ -365,26 +414,38 @@ def build_bootstrapped_hierarchical_model(
     sample_inputs: Tensor,
     sample_targets: Tensor | None = None,
     bootstrap_config: BootstrapConfig | None = None,
+    device: str | torch.device | None = None,
 ) -> DeepFuzzyFeatureModel:
     bootstrap = bootstrap_config or BootstrapConfig()
-    current_samples = _to_feature_matrix(sample_inputs, config.input_dim, name="sample_inputs")
+    current_samples = _to_feature_matrix(
+        sample_inputs,
+        config.input_dim,
+        name="sample_inputs",
+        device=device,
+    )
     target_matrix = None
     if sample_targets is not None:
-        target_matrix = _to_target_matrix(sample_targets, config.decision_layer.output_dim, name="sample_targets")
+        target_matrix = _to_target_matrix(
+            sample_targets,
+            config.decision_layer.output_dim,
+            name="sample_targets",
+            device=current_samples.device,
+        )
         if target_matrix.size(0) != current_samples.size(0):
             raise ValueError("sample_inputs and sample_targets must contain the same number of samples.")
 
     stages: list[FuzzyStage] = []
+    compute_device = current_samples.device
     for stage_config in config.stages:
-        stage = build_stage(stage_config, sample_inputs=current_samples)
+        stage = build_stage(stage_config, sample_inputs=current_samples).to(device=compute_device)
         for connected_block in stage.blocks:
-            local_inputs = current_samples.index_select(dim=1, index=connected_block.input_indices.cpu())
+            local_inputs = current_samples.index_select(dim=1, index=connected_block.input_indices)
             initialize_transparent_block_from_samples(connected_block.block, local_inputs, config=bootstrap)
         stages.append(stage)
         with torch.no_grad():
             current_samples = stage(current_samples)
 
-    decision_layer = build_decision_layer(config.decision_layer, sample_inputs=current_samples)
+    decision_layer = build_decision_layer(config.decision_layer, sample_inputs=current_samples).to(device=compute_device)
     initialize_decision_layer_from_samples(
         decision_layer,
         current_samples,
@@ -400,13 +461,24 @@ def build_stagewise_pretrained_hierarchical_model(
     sample_targets: Tensor,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
+    device: str | torch.device | None = None,
 ) -> DeepFuzzyFeatureModel:
     bootstrap = bootstrap_config or BootstrapConfig()
     pretrain = pretraining_config or StagewisePretrainingConfig(task_type=bootstrap.decision_task_type)
     if pretrain.refinement_rounds <= 0:
         raise ValueError("refinement_rounds must be positive.")
-    current_samples = _to_feature_matrix(sample_inputs, config.input_dim, name="sample_inputs")
-    target_matrix = _to_target_matrix(sample_targets, config.decision_layer.output_dim, name="sample_targets")
+    current_samples = _to_feature_matrix(
+        sample_inputs,
+        config.input_dim,
+        name="sample_inputs",
+        device=device,
+    )
+    target_matrix = _to_target_matrix(
+        sample_targets,
+        config.decision_layer.output_dim,
+        name="sample_targets",
+        device=current_samples.device,
+    )
     if target_matrix.size(0) != current_samples.size(0):
         raise ValueError("sample_inputs and sample_targets must contain the same number of samples.")
 
@@ -448,17 +520,22 @@ def _build_stagewise_from_reference(
     reference_model: DeepFuzzyFeatureModel | None = initial_reference_model
 
     for _ in range(pretrain.refinement_rounds):
-        reference_inputs = None if reference_model is None else _compute_stage_reference_inputs(reference_model, current_samples)
+        compute_device = current_samples.device
+        if reference_model is None:
+            reference_inputs = None
+        else:
+            reference_for_reestimation = copy.deepcopy(reference_model).to(device=compute_device).eval()
+            reference_inputs = _compute_stage_reference_inputs(reference_for_reestimation, current_samples)
         round_inputs = current_samples
         stages: list[FuzzyStage] = []
 
         for stage_index, stage_config in enumerate(config.stages):
             generation_inputs = round_inputs if reference_inputs is None else reference_inputs[stage_index]
-            stage = build_stage(stage_config, sample_inputs=generation_inputs)
+            stage = build_stage(stage_config, sample_inputs=generation_inputs).to(device=compute_device)
             for connected_block in stage.blocks:
                 local_generation_inputs = generation_inputs.index_select(
                     dim=1,
-                    index=connected_block.input_indices.cpu(),
+                    index=connected_block.input_indices,
                 )
                 initialize_transparent_block_from_samples(
                     connected_block.block,
@@ -471,7 +548,10 @@ def _build_stagewise_from_reference(
                 round_inputs = stage(round_inputs)
 
         decision_generation_inputs = round_inputs if reference_inputs is None else reference_inputs[-1]
-        decision_layer = build_decision_layer(config.decision_layer, sample_inputs=decision_generation_inputs)
+        decision_layer = build_decision_layer(
+            config.decision_layer,
+            sample_inputs=decision_generation_inputs,
+        ).to(device=compute_device)
         initialize_decision_layer_from_samples(
             decision_layer,
             decision_generation_inputs,
@@ -500,6 +580,7 @@ def reestimate_hierarchical_model_rule_base(
     sample_targets: Tensor,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
+    device: str | torch.device | None = None,
 ) -> DeepFuzzyFeatureModel:
     bootstrap = bootstrap_config or BootstrapConfig()
     pretrain = pretraining_config or StagewisePretrainingConfig(task_type=bootstrap.decision_task_type)
@@ -508,8 +589,18 @@ def reestimate_hierarchical_model_rule_base(
 
     _validate_reference_model_compatibility(config, reference_model)
 
-    current_samples = _to_feature_matrix(sample_inputs, config.input_dim, name="sample_inputs")
-    target_matrix = _to_target_matrix(sample_targets, config.decision_layer.output_dim, name="sample_targets")
+    current_samples = _to_feature_matrix(
+        sample_inputs,
+        config.input_dim,
+        name="sample_inputs",
+        device=device,
+    )
+    target_matrix = _to_target_matrix(
+        sample_targets,
+        config.decision_layer.output_dim,
+        name="sample_targets",
+        device=current_samples.device,
+    )
     if target_matrix.size(0) != current_samples.size(0):
         raise ValueError("sample_inputs and sample_targets must contain the same number of samples.")
 
@@ -541,12 +632,14 @@ def build_bootstrapped_shallow_model(
     sample_inputs: Tensor,
     sample_targets: Tensor | None = None,
     bootstrap_config: BootstrapConfig | None = None,
+    device: str | torch.device | None = None,
 ) -> DeepFuzzyFeatureModel:
     return build_bootstrapped_hierarchical_model(
         config.as_hierarchical_config(),
         sample_inputs=sample_inputs,
         sample_targets=sample_targets,
         bootstrap_config=bootstrap_config,
+        device=device,
     )
 
 
@@ -556,6 +649,7 @@ def build_stagewise_pretrained_shallow_model(
     sample_targets: Tensor,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
+    device: str | torch.device | None = None,
 ) -> DeepFuzzyFeatureModel:
     return build_stagewise_pretrained_hierarchical_model(
         config.as_hierarchical_config(),
@@ -563,6 +657,7 @@ def build_stagewise_pretrained_shallow_model(
         sample_targets=sample_targets,
         bootstrap_config=bootstrap_config,
         pretraining_config=pretraining_config,
+        device=device,
     )
 
 
@@ -573,6 +668,7 @@ def reestimate_shallow_model_rule_base(
     sample_targets: Tensor,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
+    device: str | torch.device | None = None,
 ) -> DeepFuzzyFeatureModel:
     return reestimate_hierarchical_model_rule_base(
         config.as_hierarchical_config(),
@@ -581,4 +677,5 @@ def reestimate_shallow_model_rule_base(
         sample_targets=sample_targets,
         bootstrap_config=bootstrap_config,
         pretraining_config=pretraining_config,
+        device=device,
     )

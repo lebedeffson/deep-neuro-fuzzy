@@ -16,15 +16,22 @@ from ruanfis import (  # noqa: E402
     DecisionLayerConfig,
     FuzzyVariable,
     GaussianMembership,
+    HierarchicalAnfisBlockConfig,
+    HierarchicalAnfisModelConfig,
+    HierarchicalAnfisStageConfig,
     HierarchicalModelConfig,
     MultiSeedBenchmarkResult,
     RefinementLoopConfig,
     ShallowFuzzyModelConfig,
+    StackedAnfisLayerConfig,
+    StackedAnfisModelConfig,
     StageConfig,
     StagewisePretrainingConfig,
     TrainingConfig,
     TransparentBlockConfig,
+    build_stacked_anfis_model,
     build_bootstrapped_shallow_model,
+    build_hierarchical_anfis_model,
     build_refined_hierarchical_model,
     evaluate_trained_model,
     format_aggregated_benchmark_results,
@@ -79,7 +86,7 @@ def build_config() -> HierarchicalModelConfig:
                         n_concepts=2,
                         concept_names=("left_signal", "left_bias"),
                         max_rule_arity=2,
-                        max_rules=4,
+                        max_rules=8,
                         rule_generation_mode="prototype",
                     ),
                     TransparentBlockConfig(
@@ -89,7 +96,7 @@ def build_config() -> HierarchicalModelConfig:
                         n_concepts=2,
                         concept_names=("right_signal", "right_bias"),
                         max_rule_arity=2,
-                        max_rules=4,
+                        max_rules=8,
                         rule_generation_mode="prototype",
                     ),
                 ),
@@ -101,7 +108,7 @@ def build_config() -> HierarchicalModelConfig:
             output_dim=1,
             output_names=("target",),
             max_rule_arity=2,
-            max_rules=8,
+            max_rules=12,
         ),
     )
 
@@ -130,6 +137,97 @@ def build_shallow_config() -> ShallowFuzzyModelConfig:
     )
 
 
+def build_stacked_config() -> StackedAnfisModelConfig:
+    return StackedAnfisModelConfig(
+        input_dim=4,
+        layers=(
+            StackedAnfisLayerConfig(
+                name="stacked_layer_1",
+                variables=(var3("x0"), var3("x1"), var3("x2"), var3("x3")),
+                output_dim=4,
+                output_names=("h1_0", "h1_1", "h1_2", "h1_3"),
+                max_rule_arity=2,
+                max_rules=16,
+                rule_generation_mode="enumerate",
+            ),
+            StackedAnfisLayerConfig(
+                name="stacked_layer_2",
+                variables=(var3("h1_0"), var3("h1_1"), var3("h1_2"), var3("h1_3")),
+                output_dim=3,
+                output_names=("h2_0", "h2_1", "h2_2"),
+                max_rule_arity=2,
+                max_rules=12,
+                rule_generation_mode="enumerate",
+            ),
+            StackedAnfisLayerConfig(
+                name="stacked_layer_3",
+                variables=(var3("h2_0"), var3("h2_1"), var3("h2_2")),
+                output_dim=1,
+                output_names=("target",),
+                max_rule_arity=2,
+                max_rules=8,
+                rule_generation_mode="enumerate",
+            ),
+        ),
+    )
+
+
+def build_hierarchical_anfis_config() -> HierarchicalAnfisModelConfig:
+    return HierarchicalAnfisModelConfig(
+        input_dim=4,
+        stages=(
+            HierarchicalAnfisStageConfig(
+                name="anfis_stage_1_local",
+                blocks=(
+                    HierarchicalAnfisBlockConfig(
+                        name="anfis_left",
+                        input_indices=(0, 1),
+                        variables=(var3("x0"), var3("x1")),
+                        output_dim=2,
+                        output_names=("left_signal", "left_bias"),
+                        max_rule_arity=2,
+                        max_rules=8,
+                        rule_generation_mode="enumerate",
+                    ),
+                    HierarchicalAnfisBlockConfig(
+                        name="anfis_right",
+                        input_indices=(2, 3),
+                        variables=(var3("x2"), var3("x3")),
+                        output_dim=2,
+                        output_names=("right_signal", "right_bias"),
+                        max_rule_arity=2,
+                        max_rules=8,
+                        rule_generation_mode="enumerate",
+                    ),
+                ),
+            ),
+            HierarchicalAnfisStageConfig(
+                name="anfis_stage_2_aggregate",
+                blocks=(
+                    HierarchicalAnfisBlockConfig(
+                        name="anfis_aggregate",
+                        input_indices=(0, 1, 2, 3),
+                        variables=(var3("left_signal"), var3("left_bias"), var3("right_signal"), var3("right_bias")),
+                        output_dim=3,
+                        output_names=("global_state", "interaction_state", "trend_state"),
+                        max_rule_arity=2,
+                        max_rules=12,
+                        rule_generation_mode="enumerate",
+                    ),
+                ),
+            ),
+        ),
+        decision_layer=DecisionLayerConfig(
+            name="decision",
+            variables=(var2("global_state"), var2("interaction_state"), var2("trend_state")),
+            output_dim=1,
+            output_names=("target",),
+            max_rule_arity=2,
+            max_rules=8,
+        ),
+    )
+
+
 def build_dataset(n_samples: int) -> tuple[torch.Tensor, torch.Tensor]:
     inputs = torch.rand(n_samples, 4)
     targets = (
@@ -146,6 +244,7 @@ def run_single_seed_benchmark(
     train_size: int,
     validation_size: int,
     test_size: int,
+    train_noise_sigma: float,
     pretrain_epochs: int,
     decision_pretrain_epochs: int,
     max_epochs: int,
@@ -155,6 +254,10 @@ def run_single_seed_benchmark(
     train_inputs, train_targets = build_dataset(train_size)
     val_inputs, val_targets = build_dataset(validation_size)
     test_inputs, test_targets = build_dataset(test_size)
+    if train_noise_sigma < 0.0:
+        raise ValueError("train_noise_sigma must be non-negative.")
+    if train_noise_sigma > 0.0:
+        train_targets = train_targets + train_noise_sigma * torch.randn_like(train_targets)
 
     refined_result = build_refined_hierarchical_model(
         build_config(),
@@ -167,20 +270,17 @@ def run_single_seed_benchmark(
             task_type="regression",
             epochs_per_stage=pretrain_epochs,
             decision_epochs=decision_pretrain_epochs,
-            learning_rate=0.02,
+            learning_rate=0.015,
             batch_size=64,
             shuffle=False,
         ),
         training_config=TrainingConfig(
             task_type="regression",
             max_epochs=max_epochs,
-            learning_rate=0.02,
-            patience=min(20, max_epochs),
+            learning_rate=0.015,
+            patience=min(30, max_epochs),
             batch_size=64,
             shuffle=False,
-            concept_orthogonality_weight=1e-3,
-            membership_overlap_weight=1e-3,
-            membership_coverage_weight=1e-3,
         ),
         refinement_loop_config=RefinementLoopConfig(
             max_cycles=refinement_cycles,
@@ -208,6 +308,34 @@ def run_single_seed_benchmark(
     )
     shallow_training.fit(train_inputs, train_targets, val_inputs, val_targets)
 
+    stacked_model = build_stacked_anfis_model(build_stacked_config())
+    stacked_training = FuzzyTrainer(
+        stacked_model,
+        TrainingConfig(
+            task_type="regression",
+            max_epochs=max_epochs,
+            learning_rate=0.02,
+            patience=min(20, max_epochs),
+            batch_size=64,
+            shuffle=False,
+        ),
+    )
+    stacked_training.fit(train_inputs, train_targets, val_inputs, val_targets)
+
+    hierarchical_anfis_model = build_hierarchical_anfis_model(build_hierarchical_anfis_config())
+    hierarchical_anfis_training = FuzzyTrainer(
+        hierarchical_anfis_model,
+        TrainingConfig(
+            task_type="regression",
+            max_epochs=max_epochs,
+            learning_rate=0.02,
+            patience=min(20, max_epochs),
+            batch_size=64,
+            shuffle=False,
+        ),
+    )
+    hierarchical_anfis_training.fit(train_inputs, train_targets, val_inputs, val_targets)
+
     sklearn_results = run_tabular_benchmark(
         train_inputs=train_inputs,
         train_targets=train_targets,
@@ -220,6 +348,24 @@ def run_single_seed_benchmark(
         evaluate_trained_model(
             "ruanfis_shallow",
             shallow_model,
+            task_type="regression",
+            train_inputs=train_inputs,
+            train_targets=train_targets,
+            test_inputs=test_inputs,
+            test_targets=test_targets,
+        ),
+        evaluate_trained_model(
+            "ruanfis_stacked_anfis",
+            stacked_model,
+            task_type="regression",
+            train_inputs=train_inputs,
+            train_targets=train_targets,
+            test_inputs=test_inputs,
+            test_targets=test_targets,
+        ),
+        evaluate_trained_model(
+            "ruanfis_hierarchical_anfis",
+            hierarchical_anfis_model,
             task_type="regression",
             train_inputs=train_inputs,
             train_targets=train_targets,
@@ -269,6 +415,7 @@ def main() -> None:
     parser.add_argument("--train-size", type=int, default=384)
     parser.add_argument("--validation-size", type=int, default=128)
     parser.add_argument("--test-size", type=int, default=128)
+    parser.add_argument("--train-noise-sigma", type=float, default=0.0)
     parser.add_argument("--pretrain-epochs", type=int, default=25)
     parser.add_argument("--decision-pretrain-epochs", type=int, default=20)
     parser.add_argument("--max-epochs", type=int, default=120)
@@ -286,6 +433,7 @@ def main() -> None:
             train_size=args.train_size,
             validation_size=args.validation_size,
             test_size=args.test_size,
+            train_noise_sigma=args.train_noise_sigma,
             pretrain_epochs=args.pretrain_epochs,
             decision_pretrain_epochs=args.decision_pretrain_epochs,
             max_epochs=args.max_epochs,
@@ -294,6 +442,10 @@ def main() -> None:
     )
 
     report = render_multi_seed_report(benchmark)
+    report = (
+        f"BENCHMARK CONFIG\ntrain_noise_sigma: {args.train_noise_sigma:.4f}\n\n"
+        + report
+    )
     paper_table = format_paper_benchmark_markdown_table(benchmark.aggregated_results)
     print(report)
 

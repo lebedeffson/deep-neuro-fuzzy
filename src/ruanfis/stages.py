@@ -5,12 +5,12 @@ from typing import Sequence
 import torch
 from torch import Tensor, nn
 
-from .blocks import TransparentFuzzyBlock
+from .blocks import BaseFuzzyRuleLayer
 from .traces import StageTrace
 
 
 class ConnectedFuzzyBlock(nn.Module):
-    def __init__(self, block: TransparentFuzzyBlock, input_indices: Sequence[int]) -> None:
+    def __init__(self, block: BaseFuzzyRuleLayer, input_indices: Sequence[int]) -> None:
         super().__init__()
         if len(input_indices) != block.input_dim:
             raise ValueError(

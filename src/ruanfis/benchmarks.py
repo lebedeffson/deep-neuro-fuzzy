@@ -6,13 +6,21 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 import torch
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    ExtraTreesRegressor,
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from torch import Tensor, nn
 
 from .metrics import TaskType, compute_metrics
 from .model import DeepFuzzyFeatureModel
+from .stacked import StackedAnfisModel
 from .trainer import FuzzyTrainer, TrainingConfig
 
 try:
@@ -132,22 +140,30 @@ def _benchmark_sklearn_model(
     )
 
 
-def _iter_fuzzy_rule_layers(model: DeepFuzzyFeatureModel) -> tuple[nn.Module, ...]:
-    layers = [connected_block.block for stage in model.stages for connected_block in stage.blocks]
-    layers.append(model.decision_layer)
-    return tuple(layers)
+def _iter_fuzzy_rule_layers(model: nn.Module) -> tuple[nn.Module, ...]:
+    if isinstance(model, DeepFuzzyFeatureModel):
+        layers = [connected_block.block for stage in model.stages for connected_block in stage.blocks]
+        layers.append(model.decision_layer)
+        return tuple(layers)
+    if isinstance(model, StackedAnfisModel):
+        return tuple(model.iter_rule_layers())
+    return ()
 
 
 def _iter_fuzzy_rule_layer_entries(
-    model: DeepFuzzyFeatureModel,
+    model: nn.Module,
 ) -> tuple[tuple[str, nn.Module], ...]:
-    entries = [
-        (f"{stage.name}/{connected_block.block.name}", connected_block.block)
-        for stage in model.stages
-        for connected_block in stage.blocks
-    ]
-    entries.append((model.decision_layer.name, model.decision_layer))
-    return tuple(entries)
+    if isinstance(model, DeepFuzzyFeatureModel):
+        entries = [
+            (f"{stage.name}/{connected_block.block.name}", connected_block.block)
+            for stage in model.stages
+            for connected_block in stage.blocks
+        ]
+        entries.append((model.decision_layer.name, model.decision_layer))
+        return tuple(entries)
+    if isinstance(model, StackedAnfisModel):
+        return tuple(model.iter_rule_layer_entries())
+    return ()
 
 
 def _entropy(values: Tensor, epsilon: float = 1e-8) -> Tensor:
@@ -173,13 +189,22 @@ def _pairwise_mean(values: Sequence[float]) -> float:
 
 
 def _summarize_fuzzy_model_structure(
-    model: DeepFuzzyFeatureModel,
+    model: nn.Module,
     *,
     rule_probability_threshold: float,
 ) -> dict[str, float]:
     layers = _iter_fuzzy_rule_layers(model)
-    hidden_blocks = sum(len(stage.blocks) for stage in model.stages)
-    hidden_concepts = sum(connected_block.block.output_dim for stage in model.stages for connected_block in stage.blocks)
+    if isinstance(model, DeepFuzzyFeatureModel):
+        hidden_blocks = sum(len(stage.blocks) for stage in model.stages)
+        hidden_concepts = sum(
+            connected_block.block.output_dim for stage in model.stages for connected_block in stage.blocks
+        )
+        stages = float(len(model.stages))
+    else:
+        # Stacked ANFIS: every hidden layer is a fuzzy rule layer.
+        hidden_blocks = max(len(layers) - 1, 0)
+        hidden_concepts = sum(layer.output_dim for layer in layers[:-1])
+        stages = float(hidden_blocks)
 
     total_rules = float(sum(layer.n_rules for layer in layers))
     active_rules = float(
@@ -188,25 +213,39 @@ def _summarize_fuzzy_model_structure(
     return {
         "total_rules": total_rules,
         "active_rules": active_rules,
-        "stages": float(len(model.stages)),
+        "stages": stages,
         "hidden_blocks": float(hidden_blocks),
         "hidden_concepts": float(hidden_concepts),
     }
 
 
 def _summarize_fuzzy_model_explainability(
-    model: DeepFuzzyFeatureModel,
+    model: nn.Module,
     inputs: Tensor,
 ) -> dict[str, float]:
     if inputs.numel() == 0:
         return {}
 
     device = next(model.parameters(), torch.empty(0)).device
-    model.eval()
-    with torch.no_grad():
-        _, trace = model.forward_with_trace(inputs.to(device=device, dtype=torch.float32))
+    if isinstance(model, DeepFuzzyFeatureModel):
+        model.eval()
+        with torch.no_grad():
+            _, trace = model.forward_with_trace(inputs.to(device=device, dtype=torch.float32))
+        decision_weights = trace.decision_trace.normalized_rule_weights.detach().cpu()
+        hidden_weight_tensors = [
+            block_trace.normalized_rule_weights.detach().cpu()
+            for stage_trace in trace.stage_traces
+            for block_trace in stage_trace.block_traces
+        ]
+    elif isinstance(model, StackedAnfisModel):
+        model.eval()
+        with torch.no_grad():
+            _, traces = model.forward_with_trace(inputs.to(device=device, dtype=torch.float32))
+        decision_weights = traces[-1].normalized_rule_weights.detach().cpu()
+        hidden_weight_tensors = [trace.normalized_rule_weights.detach().cpu() for trace in traces[:-1]]
+    else:
+        return {}
 
-    decision_weights = trace.decision_trace.normalized_rule_weights.detach().cpu()
     metrics = {
         "decision_top1_mass": float(decision_weights.max(dim=1).values.mean().item()),
         "decision_top3_mass": float(
@@ -218,14 +257,12 @@ def _summarize_fuzzy_model_explainability(
     hidden_top1_values: list[float] = []
     hidden_top3_values: list[float] = []
     hidden_entropies: list[float] = []
-    for stage_trace in trace.stage_traces:
-        for block_trace in stage_trace.block_traces:
-            weights = block_trace.normalized_rule_weights.detach().cpu()
-            hidden_top1_values.append(float(weights.max(dim=1).values.mean().item()))
-            hidden_top3_values.append(
-                float(weights.topk(k=min(3, weights.size(1)), dim=1).values.sum(dim=1).mean().item())
-            )
-            hidden_entropies.append(float(_entropy(weights).mean().item()))
+    for weights in hidden_weight_tensors:
+        hidden_top1_values.append(float(weights.max(dim=1).values.mean().item()))
+        hidden_top3_values.append(
+            float(weights.topk(k=min(3, weights.size(1)), dim=1).values.sum(dim=1).mean().item())
+        )
+        hidden_entropies.append(float(_entropy(weights).mean().item()))
 
     if hidden_top1_values:
         metrics["hidden_top1_mass"] = float(sum(hidden_top1_values) / len(hidden_top1_values))
@@ -236,7 +273,7 @@ def _summarize_fuzzy_model_explainability(
 
 
 def _extract_fuzzy_model_stability_artifacts(
-    model: DeepFuzzyFeatureModel,
+    model: nn.Module,
     *,
     rule_probability_threshold: float,
 ) -> dict[str, tuple[str, ...]]:
@@ -259,7 +296,10 @@ def _extract_fuzzy_model_stability_artifacts(
         artifacts[f"generated:{layer_path}"] = generated_rules
         artifacts[f"active:{layer_path}"] = active_rules
 
-        if layer is model.decision_layer:
+        if isinstance(model, DeepFuzzyFeatureModel) and layer is model.decision_layer:
+            decision_generated_rules.extend(generated_rules)
+            decision_active_rules.extend(active_rules)
+        elif isinstance(model, StackedAnfisModel) and layer_path == model.layers[-1].name:
             decision_generated_rules.extend(generated_rules)
             decision_active_rules.extend(active_rules)
         else:
@@ -303,7 +343,7 @@ def evaluate_trained_model(
     structural_metrics: dict[str, float] = {}
     explainability_metrics: dict[str, float] = {}
     stability_artifacts: dict[str, tuple[str, ...]] = {}
-    if isinstance(model, DeepFuzzyFeatureModel):
+    if isinstance(model, (DeepFuzzyFeatureModel, StackedAnfisModel)):
         structural_metrics = _summarize_fuzzy_model_structure(
             model,
             rule_probability_threshold=rule_probability_threshold,
@@ -342,6 +382,16 @@ def _regression_estimators(random_state: int) -> dict[str, object]:
             n_estimators=80,
             random_state=random_state,
         ),
+        "extra_trees_regressor": ExtraTreesRegressor(
+            n_estimators=120,
+            random_state=random_state,
+        ),
+        "hist_gradient_boosting_regressor": HistGradientBoostingRegressor(
+            max_iter=220,
+            learning_rate=0.06,
+            max_depth=6,
+            random_state=random_state,
+        ),
         "mlp_regressor": MLPRegressor(
             hidden_layer_sizes=(32, 16),
             activation="relu",
@@ -378,6 +428,16 @@ def _binary_estimators(random_state: int) -> dict[str, object]:
         ),
         "random_forest_classifier": RandomForestClassifier(
             n_estimators=80,
+            random_state=random_state,
+        ),
+        "extra_trees_classifier": ExtraTreesClassifier(
+            n_estimators=120,
+            random_state=random_state,
+        ),
+        "hist_gradient_boosting_classifier": HistGradientBoostingClassifier(
+            max_iter=220,
+            learning_rate=0.06,
+            max_depth=6,
             random_state=random_state,
         ),
         "mlp_classifier": MLPClassifier(

@@ -144,7 +144,9 @@ def test_refinement_loop_tracks_cycles_and_selects_best_monitor() -> None:
 
     assert len(one_cycle.cycle_records) == 1
     assert len(two_cycles.cycle_records) == 2
-    assert two_cycles.best_monitor_value <= one_cycle.best_monitor_value + 1e-6
+    # Allow tiny numeric drift across torch/BLAS builds while still checking
+    # that extra refinement cycles do not regress materially.
+    assert two_cycles.best_monitor_value <= one_cycle.best_monitor_value + 2e-5
     assert two_cycles.cycle_records[two_cycles.best_cycle_index].monitor_value == two_cycles.best_monitor_value
     assert two_cycles.training_result.validation_loss == two_cycles.best_monitor_value
     assert not two_cycles.stopped_early

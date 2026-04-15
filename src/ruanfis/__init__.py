@@ -73,6 +73,12 @@ from .exporters import (
     export_pruning_report,
     export_rule_base,
 )
+from .hierarchical_anfis import (
+    HierarchicalAnfisBlockConfig,
+    HierarchicalAnfisModelConfig,
+    HierarchicalAnfisStageConfig,
+    build_hierarchical_anfis_model,
+)
 from .explanations import (
     BlockExplanation,
     RuleExplanation,
@@ -122,6 +128,12 @@ from .serialization import (
     save_model_config_json,
     serialize_model_config,
 )
+from .stacked import (
+    StackedAnfisLayerConfig,
+    StackedAnfisModel,
+    StackedAnfisModelConfig,
+    build_stacked_anfis_model,
+)
 from .stages import ConnectedFuzzyBlock, FuzzyStage
 from .trainer import (
     EpochRecord,
@@ -155,6 +167,9 @@ __all__ = [
     "GaussianMembership",
     "GeneralizedBellMembership",
     "HierarchicalModelConfig",
+    "HierarchicalAnfisBlockConfig",
+    "HierarchicalAnfisModelConfig",
+    "HierarchicalAnfisStageConfig",
     "ShallowFuzzyModelConfig",
     "HiddenBlockRulePathFlow",
     "HiddenConceptPathFlow",
@@ -178,6 +193,9 @@ __all__ = [
     "SampleConceptFlow",
     "StageExplanation",
     "StageConfig",
+    "StackedAnfisLayerConfig",
+    "StackedAnfisModel",
+    "StackedAnfisModelConfig",
     "StagewisePretrainingConfig",
     "SugenoDecisionLayer",
     "TrainingConfig",
@@ -193,11 +211,13 @@ __all__ = [
     "build_bootstrapped_hierarchical_model",
     "build_bootstrapped_shallow_model",
     "build_hierarchical_model",
+    "build_hierarchical_anfis_model",
     "build_shallow_fuzzy_model",
     "build_stagewise_pretrained_hierarchical_model",
     "build_stagewise_pretrained_shallow_model",
     "build_refined_hierarchical_model",
     "build_refined_shallow_model",
+    "build_stacked_anfis_model",
     "reestimate_hierarchical_model_rule_base",
     "reestimate_shallow_model_rule_base",
     "build_stage",

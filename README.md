@@ -6,10 +6,13 @@ layer-wise interpretability.
 The project currently focuses on **deep fuzzy feature learning** rather than a fully
 general stacked deep ANFIS. Hidden fuzzy stages build interpretable concept
 representations, while the final layer performs first-order Sugeno inference.
+The codebase also includes explicit **Stacked ANFIS** and **Hierarchical ANFIS**
+baselines for controlled architecture comparisons.
 
 ## Current scope
 
 - transparent fuzzy hidden blocks with interpretable concept outputs;
+- explicit stacked and hierarchical ANFIS baseline builders;
 - hierarchical model builders that structurally control rule growth;
 - prototype-based and stage-wise rule initialization;
 - stage-wise pretraining and end-to-end fine-tuning in PyTorch;
@@ -130,12 +133,20 @@ examples/            runnable demos and benchmark scripts
 docs/                mathematical notes and project documentation
 ```
 
+## Paper materials
+
+For the current article package and reproducibility artifacts:
+
+- [docs/repository_materials_index_ru.md](docs/repository_materials_index_ru.md)
+- [docs/artifacts/README.md](docs/artifacts/README.md)
+
 ## Examples
 
 ```bash
 python examples/train_xor_with_rule_report.py
 python examples/train_hierarchical_regression.py
 python examples/run_regression_benchmark.py
+python examples/run_real_datasets_benchmark.py --datasets diabetes,breast_cancer,wine_binary --dffl-profile quality_auto
 ```
 
 ## Testing

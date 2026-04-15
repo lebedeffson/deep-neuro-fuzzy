@@ -124,6 +124,14 @@ def _maybe_subsample_inputs(inputs: Tensor, sample_size: int | None) -> Tensor:
     return inputs.index_select(dim=0, index=indices)
 
 
+def _resolve_module_device(module: torch.nn.Module) -> torch.device:
+    for parameter in module.parameters():
+        return parameter.device
+    for buffer in module.buffers():
+        return buffer.device
+    return torch.device("cpu")
+
+
 def _build_rule_base_from_config(
     *,
     term_counts: Sequence[int],
@@ -153,6 +161,8 @@ def _build_rule_base_from_config(
             "Prototype-based rule generation requires sample_inputs to be provided to the builder."
         )
     sampled_inputs = _maybe_subsample_inputs(inputs, prototype_sample_size)
+    variable_device = _resolve_module_device(variables[0])
+    sampled_inputs = sampled_inputs.to(device=variable_device, dtype=torch.float32)
     return generate_prototype_rule_base(
         variables=variables,
         inputs=sampled_inputs,

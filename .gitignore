@@ -29,9 +29,13 @@ env/
 # Local outputs
 reports/
 artifacts/
+!docs/artifacts/
+!docs/artifacts/**
+docs/artifacts/progress/
 *.pt
 *.pth
 *.ckpt
+.codex
 
 # OS files
 Thumbs.db

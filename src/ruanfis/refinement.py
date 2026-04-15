@@ -93,6 +93,10 @@ def _resolve_loop_config(
     return loop_config
 
 
+def _resolve_pretraining_device(training_config: TrainingConfig) -> str | None:
+    return training_config.device
+
+
 def _run_refinement_loop(
     *,
     initial_builder: Callable[[], DeepFuzzyFeatureModel],
@@ -193,6 +197,7 @@ def build_refined_hierarchical_model(
         refinement_cycles=refinement_cycles,
         refinement_loop_config=refinement_loop_config,
     )
+    pretraining_device = _resolve_pretraining_device(training_config)
 
     return _run_refinement_loop(
         initial_builder=lambda: build_stagewise_pretrained_hierarchical_model(
@@ -201,6 +206,7 @@ def build_refined_hierarchical_model(
             sample_targets=train_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
+            device=pretraining_device,
         ),
         reestimate_builder=lambda reference_model: reestimate_hierarchical_model_rule_base(
             config,
@@ -209,6 +215,7 @@ def build_refined_hierarchical_model(
             sample_targets=train_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
+            device=pretraining_device,
         ),
         training_config=training_config,
         train_inputs=train_inputs,
@@ -238,6 +245,7 @@ def build_refined_shallow_model(
         refinement_cycles=refinement_cycles,
         refinement_loop_config=refinement_loop_config,
     )
+    pretraining_device = _resolve_pretraining_device(training_config)
 
     return _run_refinement_loop(
         initial_builder=lambda: build_stagewise_pretrained_shallow_model(
@@ -246,6 +254,7 @@ def build_refined_shallow_model(
             sample_targets=train_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
+            device=pretraining_device,
         ),
         reestimate_builder=lambda reference_model: reestimate_shallow_model_rule_base(
             config,
@@ -254,6 +263,7 @@ def build_refined_shallow_model(
             sample_targets=train_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
+            device=pretraining_device,
         ),
         training_config=training_config,
         train_inputs=train_inputs,

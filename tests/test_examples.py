@@ -128,6 +128,8 @@ def test_regression_benchmark_example_runs_and_writes_report(tmp_path: Path) -> 
     assert "AGGREGATED TABULAR BENCHMARK" in report_text
     assert "linear_regression [sklearn]" in report_text
     assert "ruanfis_shallow [ruanfis]" in report_text
+    assert "ruanfis_stacked_anfis [ruanfis]" in report_text
+    assert "ruanfis_hierarchical_anfis [ruanfis]" in report_text
     assert "ruanfis_refined_deep [ruanfis]" in report_text
     assert "PAPER-READY SUMMARY TABLE" in report_text
     assert "INTERPRETATION STABILITY" in report_text
@@ -135,5 +137,56 @@ def test_regression_benchmark_example_runs_and_writes_report(tmp_path: Path) -> 
     assert "test:rmse" in table_text
     assert "rules:total_rules" in table_text
     assert "stab:active_rule_jaccard" in table_text
+    assert json_path.exists()
+    assert result.stdout.strip()
+
+
+def test_real_datasets_benchmark_example_runs_and_writes_report(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    output_path = tmp_path / "real_datasets_report.txt"
+    summary_path = tmp_path / "real_datasets_summary.md"
+    json_path = tmp_path / "real_datasets_report.json"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(project_root / "src")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(project_root / "examples" / "run_real_datasets_benchmark.py"),
+            "--datasets",
+            "breast_cancer",
+            "--seeds",
+            "19",
+            "--pretrain-epochs",
+            "4",
+            "--decision-pretrain-epochs",
+            "4",
+            "--max-epochs",
+            "12",
+            "--refinement-cycles",
+            "1",
+            "--output",
+            str(output_path),
+            "--summary-table-output",
+            str(summary_path),
+            "--json-output",
+            str(json_path),
+        ],
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    report_text = output_path.read_text(encoding="utf-8")
+    summary_text = summary_path.read_text(encoding="utf-8")
+    assert "UNIFIED REAL-DATASET BENCHMARK" in report_text
+    assert "DATASET: breast_cancer" in report_text
+    assert "ruanfis_stacked_anfis [ruanfis]" in report_text
+    assert "ruanfis_hierarchical_anfis [ruanfis]" in report_text
+    assert "ruanfis_refined_deep [ruanfis]" in report_text
+    assert "CROSS-DATASET FUZZY SUMMARY" in report_text
+    assert "| model | avg_rank |" in summary_text
     assert json_path.exists()
     assert result.stdout.strip()
