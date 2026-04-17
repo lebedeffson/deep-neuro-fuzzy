@@ -55,7 +55,7 @@ from ruanfis import (  # noqa: E402
     save_paper_benchmark_markdown_table,
     serialize_multi_seed_benchmark_result,
 )
-from ruanfis.metrics import TaskType
+from ruanfis.metrics import TaskType, compute_metrics
 from ruanfis.trainer import FuzzyTrainer
 
 
@@ -512,6 +512,48 @@ def _scale_regression_targets(
     return train_scaled, validation_scaled, test_scaled
 
 
+def _choose_best_classification_threshold(
+    model: torch.nn.Module,
+    *,
+    validation_inputs: torch.Tensor,
+    validation_targets: torch.Tensor,
+    default_threshold: float,
+) -> float:
+    if validation_inputs.numel() == 0 or validation_targets.numel() == 0:
+        return default_threshold
+
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
+
+    model.eval()
+    with torch.no_grad():
+        validation_logits = model(validation_inputs.to(device=device, dtype=torch.float32)).detach().cpu()
+
+    best_threshold = float(default_threshold)
+    best_f1 = float("-inf")
+    validation_targets_cpu = validation_targets.detach().cpu()
+    for threshold in np.linspace(0.30, 0.70, 21):
+        metrics = compute_metrics(
+            "binary_classification",
+            validation_logits,
+            validation_targets_cpu,
+            classification_threshold=float(threshold),
+        )
+        current_f1 = float(metrics["f1"])
+        if current_f1 > best_f1 + 1e-12:
+            best_f1 = current_f1
+            best_threshold = float(threshold)
+            continue
+        if abs(current_f1 - best_f1) <= 1e-12 and abs(float(threshold) - default_threshold) < abs(
+            best_threshold - default_threshold
+        ):
+            best_threshold = float(threshold)
+
+    return best_threshold
+
+
 def prepare_dataset_split(
     spec: DatasetSpec,
     *,
@@ -595,6 +637,7 @@ def run_single_seed_dataset_benchmark(
     batch_size: int,
     patience: int,
     classification_threshold: float,
+    tune_fuzzy_threshold: bool,
     device: str | None,
 ):
     phase_started_at = time.perf_counter()
@@ -764,6 +807,48 @@ def run_single_seed_dataset_benchmark(
 
     phase_started_at = time.perf_counter()
     progress_log(f"seed={seed} fuzzy_eval: start")
+    model_thresholds = {
+        "ruanfis_shallow": classification_threshold,
+        "ruanfis_stacked_anfis": classification_threshold,
+        "ruanfis_hierarchical_anfis": classification_threshold,
+        "ruanfis_refined_deep": classification_threshold,
+    }
+    if tune_fuzzy_threshold and spec.task_type == "binary_classification":
+        model_thresholds["ruanfis_shallow"] = _choose_best_classification_threshold(
+            shallow_model,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            default_threshold=classification_threshold,
+        )
+        model_thresholds["ruanfis_stacked_anfis"] = _choose_best_classification_threshold(
+            stacked_model,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            default_threshold=classification_threshold,
+        )
+        model_thresholds["ruanfis_hierarchical_anfis"] = _choose_best_classification_threshold(
+            hierarchical_anfis_model,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            default_threshold=classification_threshold,
+        )
+        model_thresholds["ruanfis_refined_deep"] = _choose_best_classification_threshold(
+            dffl_result.model,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            default_threshold=classification_threshold,
+        )
+        progress_log(
+            "seed={seed} threshold_tuning: shallow={shallow:.2f}, stacked={stacked:.2f}, "
+            "hierarchical={hierarchical:.2f}, dffl={dffl:.2f}".format(
+                seed=seed,
+                shallow=model_thresholds["ruanfis_shallow"],
+                stacked=model_thresholds["ruanfis_stacked_anfis"],
+                hierarchical=model_thresholds["ruanfis_hierarchical_anfis"],
+                dffl=model_thresholds["ruanfis_refined_deep"],
+            )
+        )
+
     fuzzy_results = (
         evaluate_trained_model(
             "ruanfis_shallow",
@@ -773,7 +858,7 @@ def run_single_seed_dataset_benchmark(
             train_targets=train_targets,
             test_inputs=test_inputs,
             test_targets=test_targets,
-            classification_threshold=classification_threshold,
+            classification_threshold=model_thresholds["ruanfis_shallow"],
         ),
         evaluate_trained_model(
             "ruanfis_stacked_anfis",
@@ -783,7 +868,7 @@ def run_single_seed_dataset_benchmark(
             train_targets=train_targets,
             test_inputs=test_inputs,
             test_targets=test_targets,
-            classification_threshold=classification_threshold,
+            classification_threshold=model_thresholds["ruanfis_stacked_anfis"],
         ),
         evaluate_trained_model(
             "ruanfis_hierarchical_anfis",
@@ -793,7 +878,7 @@ def run_single_seed_dataset_benchmark(
             train_targets=train_targets,
             test_inputs=test_inputs,
             test_targets=test_targets,
-            classification_threshold=classification_threshold,
+            classification_threshold=model_thresholds["ruanfis_hierarchical_anfis"],
         ),
         evaluate_trained_model(
             "ruanfis_refined_deep",
@@ -803,7 +888,7 @@ def run_single_seed_dataset_benchmark(
             train_targets=train_targets,
             test_inputs=test_inputs,
             test_targets=test_targets,
-            classification_threshold=classification_threshold,
+            classification_threshold=model_thresholds["ruanfis_refined_deep"],
         ),
     )
     progress_log(f"seed={seed} fuzzy_eval: done in {time.perf_counter() - phase_started_at:.2f}s")
@@ -1044,6 +1129,11 @@ def main() -> None:
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--classification-threshold", type=float, default=0.5)
     parser.add_argument(
+        "--tune-fuzzy-threshold",
+        action="store_true",
+        help="Tune binary-classification threshold per fuzzy model on validation split (max F1).",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -1097,6 +1187,7 @@ def main() -> None:
                 batch_size=args.batch_size,
                 patience=args.patience,
                 classification_threshold=args.classification_threshold,
+                tune_fuzzy_threshold=args.tune_fuzzy_threshold,
                 device=args.device,
             )
             per_seed_results.append(tuple(seed_results))
