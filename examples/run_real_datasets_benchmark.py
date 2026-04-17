@@ -285,7 +285,7 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
         learning_rate_scale_regression=1.0,
-        learning_rate_scale_classification=1.05,
+        learning_rate_scale_classification=0.8,
         refinement_cycle_floor=2,
     ),
 }
