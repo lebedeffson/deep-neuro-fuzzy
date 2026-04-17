@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -272,6 +273,21 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         learning_rate_scale_classification=0.9,
         refinement_cycle_floor=2,
     ),
+    "quality_large_cls": DfflProfile(
+        name="quality_large_cls",
+        local_concepts=2,
+        local_max_rules=6,
+        aggregate_max_rules=14,
+        decision_max_rules=10,
+        stage2_width_min=4,
+        stage2_width_max=7,
+        local_rule_generation_mode="prototype",
+        aggregate_rule_generation_mode="prototype",
+        decision_rule_generation_mode="prototype",
+        learning_rate_scale_regression=1.0,
+        learning_rate_scale_classification=1.05,
+        refinement_cycle_floor=2,
+    ),
 }
 
 
@@ -282,8 +298,11 @@ def resolve_dffl_profile(
     n_samples: int,
 ) -> DfflProfile:
     if profile_name == "quality_auto":
+        # Large binary datasets benefit from a tighter, less explosive rule budget.
+        if task_type == "binary_classification" and n_samples >= 8_000:
+            return DFFL_PROFILES["quality_large_cls"]
         if task_type == "binary_classification" and n_samples >= 500:
-            return DFFL_PROFILES["quality_balanced"]
+            return DFFL_PROFILES["quality"]
         return DFFL_PROFILES["quality"]
     return DFFL_PROFILES[profile_name]
 
@@ -905,6 +924,95 @@ def build_cross_dataset_summary(
     return "\n".join(lines)
 
 
+def _find_model_entry(seed_results, model_name: str):
+    for entry in seed_results:
+        if entry.model_name == model_name:
+            return entry
+    return None
+
+
+def build_interpretability_report(
+    dataset_results: dict[str, MultiSeedBenchmarkResult],
+    specs: dict[str, DatasetSpec],
+    *,
+    top_rules: int = 8,
+) -> str:
+    fuzzy_model_names = (
+        "ruanfis_shallow",
+        "ruanfis_stacked_anfis",
+        "ruanfis_hierarchical_anfis",
+        "ruanfis_refined_deep",
+    )
+
+    lines: list[str] = [
+        "# Interpretable Rule Structure Report",
+        "",
+        "The report summarizes rule-level artifacts collected from repeated runs.",
+        "It provides compact, human-readable evidence of hidden and decision rule activation patterns.",
+        "",
+    ]
+
+    for dataset_name, multi_seed in dataset_results.items():
+        lines.append(f"## Dataset: {dataset_name}")
+        lines.append(f"task: {specs[dataset_name].task_type}")
+        lines.append(f"seeds: {', '.join(str(seed) for seed in multi_seed.seeds)}")
+        lines.append("")
+
+        aggregated_map = {entry.model_name: entry for entry in multi_seed.aggregated_results}
+        for model_name in fuzzy_model_names:
+            if model_name not in aggregated_map:
+                continue
+
+            aggregated = aggregated_map[model_name]
+            active_rule_jaccard = aggregated.stability_metrics.get("active_rule_jaccard", float("nan"))
+            decision_jaccard = aggregated.stability_metrics.get("decision_active_rule_jaccard", float("nan"))
+            total_rules = aggregated.structural_metrics.get("total_rules")
+            active_rules = aggregated.structural_metrics.get("active_rules")
+            total_rules_mean = float(total_rules.mean) if total_rules is not None else float("nan")
+            active_rules_mean = float(active_rules.mean) if active_rules is not None else float("nan")
+
+            decision_counter: Counter[str] = Counter()
+            hidden_counter: Counter[str] = Counter()
+            for seed_results in multi_seed.per_seed_results:
+                entry = _find_model_entry(seed_results, model_name)
+                if entry is None:
+                    continue
+                decision_counter.update(entry.stability_artifacts.get("active:decision", ()))
+                hidden_counter.update(entry.stability_artifacts.get("active:hidden", ()))
+
+            seed_count = len(multi_seed.seeds)
+            lines.append(f"### {model_name}")
+            lines.append(
+                "structure: total_rules={:.2f}, active_rules={:.2f}; stability: active_jaccard={:.4f}, decision_jaccard={:.4f}".format(
+                    total_rules_mean,
+                    active_rules_mean,
+                    active_rule_jaccard,
+                    decision_jaccard,
+                )
+            )
+            lines.append("")
+
+            lines.append("Top decision rules by activation frequency:")
+            if decision_counter:
+                for rule, count in decision_counter.most_common(top_rules):
+                    lines.append(f"- [{count}/{seed_count}] {rule}")
+            else:
+                lines.append("- (no decision-level active rules captured)")
+            lines.append("")
+
+            lines.append("Top hidden rules by activation frequency:")
+            if hidden_counter:
+                for rule, count in hidden_counter.most_common(top_rules):
+                    lines.append(f"- [{count}/{seed_count}] {rule}")
+            else:
+                lines.append("- (no hidden-level active rules captured)")
+            lines.append("")
+
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a unified multi-seed benchmark on 3-5 real tabular datasets for stacked/hierarchical/DFFL models."
@@ -944,6 +1052,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--summary-table-output", type=Path, default=None)
     parser.add_argument("--json-output", type=Path, default=None)
+    parser.add_argument("--interpretability-report-output", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
 
@@ -1018,6 +1127,10 @@ def main() -> None:
             save_paper_benchmark_markdown_table(benchmark.aggregated_results, dataset_table_path)
 
     summary_table = build_cross_dataset_summary(dataset_results, {name: DATASETS[name] for name in dataset_names})
+    interpretability_report = build_interpretability_report(
+        dataset_results,
+        {name: DATASETS[name] for name in dataset_names},
+    )
 
     full_report_sections = [
         "UNIFIED REAL-DATASET BENCHMARK",
@@ -1044,6 +1157,10 @@ def main() -> None:
         args.summary_table_output.parent.mkdir(parents=True, exist_ok=True)
         args.summary_table_output.write_text(summary_table, encoding="utf-8")
 
+    if args.interpretability_report_output is not None:
+        args.interpretability_report_output.parent.mkdir(parents=True, exist_ok=True)
+        args.interpretability_report_output.write_text(interpretability_report, encoding="utf-8")
+
     if args.json_output is not None:
         payload = {
             "datasets": list(dataset_names),
@@ -1055,9 +1172,14 @@ def main() -> None:
                 for dataset_name, result in dataset_results.items()
             },
             "cross_dataset_summary_markdown": summary_table,
+            "interpretability_report_markdown": interpretability_report,
         }
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
         args.json_output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    if args.output_dir is not None:
+        interpretability_path = args.output_dir / "interpretability_report.md"
+        interpretability_path.write_text(interpretability_report, encoding="utf-8")
 
 
 if __name__ == "__main__":
