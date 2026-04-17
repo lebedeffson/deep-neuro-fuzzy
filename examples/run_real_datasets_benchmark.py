@@ -711,6 +711,8 @@ def run_single_seed_dataset_benchmark(
             batch_size=batch_size,
             shuffle=True,
             classification_threshold=classification_threshold,
+            monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+            monitor_mode="max" if spec.task_type == "binary_classification" else None,
             device=device,
         ),
         refinement_loop_config=RefinementLoopConfig(

@@ -33,6 +33,8 @@ class TrainingConfig:
     shuffle: bool = True
     device: str | None = None
     classification_threshold: float = 0.5
+    monitor_metric: str | None = None
+    monitor_mode: str | None = None  # "min" | "max"; defaults to "min" when metric is not set
     rule_sparsity_weight: float = 0.0
     rule_length_weight: float = 0.0
     concept_orthogonality_weight: float = 0.0
@@ -173,9 +175,15 @@ class FuzzyTrainer:
         history: list[EpochRecord] = []
         best_state = copy.deepcopy(self.model.state_dict())
         best_epoch = 0
-        best_monitor_value = float("inf")
+        monitor_mode = self._resolve_monitor_mode()
+        if monitor_mode == "min":
+            best_monitor_value = float("inf")
+        elif monitor_mode == "max":
+            best_monitor_value = float("-inf")
+        else:
+            raise ValueError(f"Unsupported monitor mode: {monitor_mode}. Expected 'min' or 'max'.")
         epochs_without_improvement = 0
-        monitor_name = "validation_loss" if has_validation else "train_loss"
+        monitor_name = self._resolve_monitor_name(has_validation)
 
         for epoch in range(1, self.config.max_epochs + 1):
             train_result = self._run_training_epoch(train_inputs, train_targets, optimizer)
@@ -185,7 +193,11 @@ class FuzzyTrainer:
                 else None
             )
 
-            monitor_value = validation_result.loss if validation_result is not None else train_result.loss
+            monitor_value = self._resolve_monitor_value(
+                train_result=train_result,
+                validation_result=validation_result,
+                has_validation=has_validation,
+            )
             history.append(
                 EpochRecord(
                     epoch=epoch,
@@ -196,7 +208,12 @@ class FuzzyTrainer:
                 )
             )
 
-            if monitor_value < best_monitor_value - self.config.min_delta:
+            improved = (
+                monitor_value < best_monitor_value - self.config.min_delta
+                if monitor_mode == "min"
+                else monitor_value > best_monitor_value + self.config.min_delta
+            )
+            if improved:
                 best_monitor_value = monitor_value
                 best_epoch = epoch
                 best_state = copy.deepcopy(self.model.state_dict())
@@ -314,6 +331,36 @@ class FuzzyTrainer:
             loss=float(total_task_loss / max(total_items, 1)),
             metrics=metrics,
         )
+
+    def _resolve_monitor_mode(self) -> str:
+        if self.config.monitor_mode is not None:
+            return self.config.monitor_mode
+        return "min"
+
+    def _resolve_monitor_name(self, has_validation: bool) -> str:
+        metric = self.config.monitor_metric
+        if metric is None:
+            return "validation_loss" if has_validation else "train_loss"
+        prefix = "validation" if has_validation else "train"
+        return f"{prefix}_{metric}"
+
+    def _resolve_monitor_value(
+        self,
+        *,
+        train_result: EvaluationResult,
+        validation_result: EvaluationResult | None,
+        has_validation: bool,
+    ) -> float:
+        metric_name = self.config.monitor_metric
+        if metric_name is None:
+            return validation_result.loss if validation_result is not None else train_result.loss
+        source = validation_result if has_validation and validation_result is not None else train_result
+        if metric_name not in source.metrics:
+            available = ", ".join(sorted(source.metrics.keys()))
+            raise ValueError(
+                f"Monitor metric '{metric_name}' is unavailable. Available metrics: {available}."
+            )
+        return float(source.metrics[metric_name])
 
     def _regularization_penalty(self) -> Tensor:
         penalty = next(self.model.parameters()).new_tensor(0.0)
