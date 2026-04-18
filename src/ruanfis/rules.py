@@ -184,6 +184,15 @@ def _rule_signature(antecedents: tuple[Antecedent, ...]) -> tuple[tuple[int, int
     return tuple((antecedent.variable_index, antecedent.term_index) for antecedent in antecedents)
 
 
+def _validate_prototype_scoring_mode(mode: str) -> str:
+    normalized = mode.strip().lower()
+    if normalized not in {"max", "hybrid"}:
+        raise ValueError(
+            f"Unsupported prototype_scoring_mode={mode!r}. Expected 'max' or 'hybrid'."
+        )
+    return normalized
+
+
 def generate_prototype_rule_base(
     variables: Sequence[FuzzyVariable],
     inputs: Tensor,
@@ -193,9 +202,11 @@ def generate_prototype_rule_base(
     name_prefix: str = "rule",
     top_terms_per_variable: int = 2,
     variable_pool_size: int | None = None,
+    prototype_scoring_mode: str = "max",
 ) -> RuleBase:
     if top_terms_per_variable <= 0:
         raise ValueError("top_terms_per_variable must be positive.")
+    scoring_mode = _validate_prototype_scoring_mode(prototype_scoring_mode)
 
     _validate_prototype_inputs(variables, inputs)
     _, max_arity, target_rule_count = _validate_generation_limits(
@@ -221,7 +232,7 @@ def generate_prototype_rule_base(
         top_term_values.append(values)
         top_term_indices.append(indices)
 
-    candidate_scores: dict[tuple[Antecedent, ...], float] = {}
+    candidate_stats: dict[tuple[Antecedent, ...], tuple[float, float, int]] = {}
     sample_count = inputs.size(0)
     for sample_index in range(sample_count):
         variable_strengths = torch.tensor(
@@ -250,23 +261,42 @@ def generate_prototype_rule_base(
                         Antecedent(variable_index=variable_index, term_index=term_index)
                         for variable_index, term_index in sorted(antecedent_pairs)
                     )
-                    previous_score = candidate_scores.get(antecedents)
-                    if previous_score is None or score > previous_score:
-                        candidate_scores[antecedents] = score
+                    previous = candidate_stats.get(antecedents)
+                    if previous is None:
+                        candidate_stats[antecedents] = (float(score), float(score), 1)
+                    else:
+                        previous_max, previous_sum, previous_count = previous
+                        candidate_stats[antecedents] = (
+                            max(previous_max, float(score)),
+                            previous_sum + float(score),
+                            previous_count + 1,
+                        )
 
-    ranked_candidates = sorted(
-        candidate_scores.items(),
-        key=lambda item: (-len(item[0]), -item[1], _rule_signature(item[0])),
-    )
+    if scoring_mode == "max":
+        ranked_candidates = sorted(
+            ((antecedents, stats[0]) for antecedents, stats in candidate_stats.items()),
+            key=lambda item: (-len(item[0]), -item[1], _rule_signature(item[0])),
+        )
+    else:
+        # Hybrid score favors consistently strong rules over one-off spikes.
+        def _hybrid_key(item: tuple[tuple[Antecedent, ...], tuple[float, float, int]]):
+            antecedents, (max_score, sum_score, count_score) = item
+            mean_score = sum_score / max(count_score, 1)
+            support = count_score / max(sample_count, 1)
+            hybrid = 0.55 * mean_score + 0.30 * max_score + 0.15 * support
+            return (-hybrid, -mean_score, -support, -len(antecedents), _rule_signature(antecedents))
+
+        ranked_candidates = sorted(candidate_stats.items(), key=_hybrid_key)
+
     if not ranked_candidates:
         raise ValueError("Prototype-based rule generation did not produce any rule candidates.")
 
     rules = [
         RuleSpec(
-            antecedents=antecedents,
+            antecedents=candidate_entry[0],
             name=f"{name_prefix}_{rule_index}",
             gate_init=gate_init,
         )
-        for rule_index, (antecedents, _) in enumerate(ranked_candidates[:target_rule_count])
+        for rule_index, candidate_entry in enumerate(ranked_candidates[:target_rule_count])
     ]
     return RuleBase(rules)

@@ -222,6 +222,8 @@ def _summarize_fuzzy_model_structure(
 def _summarize_fuzzy_model_explainability(
     model: nn.Module,
     inputs: Tensor,
+    *,
+    top_k_rules: int | None = None,
 ) -> dict[str, float]:
     if inputs.numel() == 0:
         return {}
@@ -230,7 +232,10 @@ def _summarize_fuzzy_model_explainability(
     if isinstance(model, DeepFuzzyFeatureModel):
         model.eval()
         with torch.no_grad():
-            _, trace = model.forward_with_trace(inputs.to(device=device, dtype=torch.float32))
+            _, trace = model.forward_with_trace(
+                inputs.to(device=device, dtype=torch.float32),
+                top_k_rules=top_k_rules,
+            )
         decision_weights = trace.decision_trace.normalized_rule_weights.detach().cpu()
         hidden_weight_tensors = [
             block_trace.normalized_rule_weights.detach().cpu()
@@ -240,7 +245,10 @@ def _summarize_fuzzy_model_explainability(
     elif isinstance(model, StackedAnfisModel):
         model.eval()
         with torch.no_grad():
-            _, traces = model.forward_with_trace(inputs.to(device=device, dtype=torch.float32))
+            _, traces = model.forward_with_trace(
+                inputs.to(device=device, dtype=torch.float32),
+                top_k_rules=top_k_rules,
+            )
         decision_weights = traces[-1].normalized_rule_weights.detach().cpu()
         hidden_weight_tensors = [trace.normalized_rule_weights.detach().cpu() for trace in traces[:-1]]
     else:
@@ -327,6 +335,7 @@ def evaluate_trained_model(
     family: str = "ruanfis",
     classification_threshold: float = 0.5,
     rule_probability_threshold: float = 0.5,
+    top_k_rules: int | None = None,
 ) -> BenchmarkEntryResult:
     train_features = _to_feature_tensor(train_inputs)
     test_features = _to_feature_tensor(test_inputs)
@@ -337,8 +346,14 @@ def evaluate_trained_model(
 
     model.eval()
     with torch.no_grad():
-        train_predictions = model(train_features.to(device=device, dtype=torch.float32)).detach().cpu()
-        test_predictions = model(test_features.to(device=device, dtype=torch.float32)).detach().cpu()
+        train_predictions = model(
+            train_features.to(device=device, dtype=torch.float32),
+            top_k_rules=top_k_rules,
+        ).detach().cpu()
+        test_predictions = model(
+            test_features.to(device=device, dtype=torch.float32),
+            top_k_rules=top_k_rules,
+        ).detach().cpu()
 
     structural_metrics: dict[str, float] = {}
     explainability_metrics: dict[str, float] = {}
@@ -348,7 +363,11 @@ def evaluate_trained_model(
             model,
             rule_probability_threshold=rule_probability_threshold,
         )
-        explainability_metrics = _summarize_fuzzy_model_explainability(model, test_features)
+        explainability_metrics = _summarize_fuzzy_model_explainability(
+            model,
+            test_features,
+            top_k_rules=top_k_rules,
+        )
         stability_artifacts = _extract_fuzzy_model_stability_artifacts(
             model,
             rule_probability_threshold=rule_probability_threshold,

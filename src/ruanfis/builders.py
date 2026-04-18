@@ -26,6 +26,7 @@ class TransparentBlockConfig:
     rule_name_prefix: str | None = None
     rule_generation_mode: str = "enumerate"
     prototype_term_limit: int = 2
+    prototype_scoring_mode: str = "max"
     prototype_variable_pool_size: int | None = None
     prototype_sample_size: int | None = 256
 
@@ -61,6 +62,7 @@ class DecisionLayerConfig:
     rule_name_prefix: str | None = None
     rule_generation_mode: str = "enumerate"
     prototype_term_limit: int = 2
+    prototype_scoring_mode: str = "max"
     prototype_variable_pool_size: int | None = None
     prototype_sample_size: int | None = 256
 
@@ -143,6 +145,7 @@ def _build_rule_base_from_config(
     name_prefix: str,
     rule_generation_mode: str,
     prototype_term_limit: int,
+    prototype_scoring_mode: str,
     prototype_variable_pool_size: int | None,
     prototype_sample_size: int | None,
 ):
@@ -171,6 +174,7 @@ def _build_rule_base_from_config(
         gate_init=gate_init,
         name_prefix=name_prefix,
         top_terms_per_variable=prototype_term_limit,
+        prototype_scoring_mode=prototype_scoring_mode,
         variable_pool_size=prototype_variable_pool_size,
     )
 
@@ -193,6 +197,7 @@ def build_transparent_block(
         name_prefix=config.rule_name_prefix or config.name,
         rule_generation_mode=config.rule_generation_mode,
         prototype_term_limit=config.prototype_term_limit,
+        prototype_scoring_mode=config.prototype_scoring_mode,
         prototype_variable_pool_size=config.prototype_variable_pool_size,
         prototype_sample_size=config.prototype_sample_size,
     )
@@ -227,6 +232,7 @@ def build_decision_layer(
         name_prefix=config.rule_name_prefix or config.name,
         rule_generation_mode=config.rule_generation_mode,
         prototype_term_limit=config.prototype_term_limit,
+        prototype_scoring_mode=config.prototype_scoring_mode,
         prototype_variable_pool_size=config.prototype_variable_pool_size,
         prototype_sample_size=config.prototype_sample_size,
     )

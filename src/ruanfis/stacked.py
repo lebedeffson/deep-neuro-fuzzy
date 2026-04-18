@@ -23,6 +23,7 @@ class StackedAnfisLayerConfig:
     rule_name_prefix: str | None = None
     rule_generation_mode: str = "enumerate"
     prototype_term_limit: int = 2
+    prototype_scoring_mode: str = "max"
     prototype_variable_pool_size: int | None = None
     prototype_sample_size: int | None = 256
 
@@ -115,6 +116,7 @@ def _as_decision_config(layer: StackedAnfisLayerConfig) -> DecisionLayerConfig:
         rule_name_prefix=layer.rule_name_prefix,
         rule_generation_mode=layer.rule_generation_mode,
         prototype_term_limit=layer.prototype_term_limit,
+        prototype_scoring_mode=layer.prototype_scoring_mode,
         prototype_variable_pool_size=layer.prototype_variable_pool_size,
         prototype_sample_size=layer.prototype_sample_size,
     )

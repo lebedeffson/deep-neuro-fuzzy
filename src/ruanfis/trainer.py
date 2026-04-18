@@ -39,6 +39,7 @@ class TrainingConfig:
     huber_delta: float = 1.0
     monitor_metric: str | None = None
     monitor_mode: str | None = None  # "min" | "max"; defaults to "min" when metric is not set
+    top_k_rules: int | None = None
     rule_sparsity_weight: float = 0.0
     rule_length_weight: float = 0.0
     concept_orthogonality_weight: float = 0.0
@@ -170,6 +171,9 @@ class FuzzyTrainer:
             validation_inputs = validation_inputs.to(device=device, dtype=torch.float32)
             validation_targets = validation_targets.to(device=device, dtype=torch.float32)
 
+        if self.config.top_k_rules is not None and self.config.top_k_rules <= 0:
+            raise ValueError("top_k_rules must be positive when provided.")
+
         if self.config.task_type == "binary_classification":
             effective_pos_weight: float | None = None
             if self.config.binary_auto_pos_weight:
@@ -287,7 +291,7 @@ class FuzzyTrainer:
         targets = targets.to(device=device, dtype=torch.float32)
         self.model.eval()
         with torch.no_grad():
-            predictions = self.model(inputs)
+            predictions = self.model(inputs, top_k_rules=self.config.top_k_rules)
             aligned_targets = self._align_targets(predictions, targets)
             loss = self.loss_fn(predictions, aligned_targets).item()
             metrics = compute_metrics(
@@ -334,7 +338,7 @@ class FuzzyTrainer:
 
         for batch_inputs, batch_targets in self._iter_batches(inputs, targets):
             optimizer.zero_grad()
-            predictions = self.model(batch_inputs)
+            predictions = self.model(batch_inputs, top_k_rules=self.config.top_k_rules)
             aligned_targets = self._align_targets(predictions, batch_targets)
             task_loss = self.loss_fn(predictions, aligned_targets)
             total_loss = task_loss + self._regularization_penalty()

@@ -24,6 +24,7 @@ class HierarchicalAnfisBlockConfig:
     rule_name_prefix: str | None = None
     rule_generation_mode: str = "enumerate"
     prototype_term_limit: int = 2
+    prototype_scoring_mode: str = "max"
     prototype_variable_pool_size: int | None = None
     prototype_sample_size: int | None = 256
 
@@ -67,6 +68,7 @@ def _as_decision_config(block: HierarchicalAnfisBlockConfig) -> DecisionLayerCon
         rule_name_prefix=block.rule_name_prefix,
         rule_generation_mode=block.rule_generation_mode,
         prototype_term_limit=block.prototype_term_limit,
+        prototype_scoring_mode=block.prototype_scoring_mode,
         prototype_variable_pool_size=block.prototype_variable_pool_size,
         prototype_sample_size=block.prototype_sample_size,
     )

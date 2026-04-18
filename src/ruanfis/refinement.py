@@ -50,10 +50,10 @@ class RefinementResult:
     stopped_early: bool
 
 
-def _training_monitor(training_result: TrainingResult) -> tuple[str, float]:
-    if training_result.validation_loss is not None:
-        return "validation_loss", float(training_result.validation_loss)
-    return "train_loss", float(training_result.train_loss)
+def _resolve_monitor_mode(training_config: TrainingConfig) -> str:
+    if training_config.monitor_mode is not None:
+        return training_config.monitor_mode
+    return "min"
 
 
 def _run_fine_tuning_cycle(
@@ -112,8 +112,22 @@ def _run_refinement_loop(
     best_model: DeepFuzzyFeatureModel | None = None
     best_training_result: TrainingResult | None = None
     best_cycle_index = 0
-    best_monitor_name = "validation_loss" if validation_inputs is not None else "train_loss"
-    best_monitor_value = float("inf")
+    monitor_mode = _resolve_monitor_mode(training_config)
+    if monitor_mode == "min":
+        best_monitor_value = float("inf")
+    elif monitor_mode == "max":
+        best_monitor_value = float("-inf")
+    else:
+        raise ValueError(f"Unsupported monitor mode: {monitor_mode}. Expected 'min' or 'max'.")
+    best_monitor_name = (
+        f"validation_{training_config.monitor_metric}"
+        if training_config.monitor_metric is not None and validation_inputs is not None
+        else (
+            f"train_{training_config.monitor_metric}"
+            if training_config.monitor_metric is not None
+            else ("validation_loss" if validation_inputs is not None else "train_loss")
+        )
+    )
     cycles_without_improvement = 0
     stopped_early = False
     cycle_records: list[RefinementCycleRecord] = []
@@ -132,7 +146,8 @@ def _run_refinement_loop(
             validation_inputs=validation_inputs,
             validation_targets=validation_targets,
         )
-        monitor_name, monitor_value = _training_monitor(training_result)
+        monitor_name = training_result.monitor_name
+        monitor_value = float(training_result.best_monitor_value)
         cycle_records.append(
             RefinementCycleRecord(
                 cycle_index=cycle_index,
@@ -150,7 +165,12 @@ def _run_refinement_loop(
             )
         )
 
-        if monitor_value < best_monitor_value - loop_config.min_delta:
+        improved = (
+            monitor_value < best_monitor_value - loop_config.min_delta
+            if monitor_mode == "min"
+            else monitor_value > best_monitor_value + loop_config.min_delta
+        )
+        if improved:
             best_monitor_value = monitor_value
             best_monitor_name = monitor_name
             best_cycle_index = cycle_index
@@ -204,6 +224,8 @@ def build_refined_hierarchical_model(
             config,
             sample_inputs=train_inputs,
             sample_targets=train_targets,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
             device=pretraining_device,
@@ -213,6 +235,8 @@ def build_refined_hierarchical_model(
             reference_model=reference_model,
             sample_inputs=train_inputs,
             sample_targets=train_targets,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
             device=pretraining_device,
@@ -252,6 +276,8 @@ def build_refined_shallow_model(
             config,
             sample_inputs=train_inputs,
             sample_targets=train_targets,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
             device=pretraining_device,
@@ -261,6 +287,8 @@ def build_refined_shallow_model(
             reference_model=reference_model,
             sample_inputs=train_inputs,
             sample_targets=train_targets,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
             bootstrap_config=bootstrap_config,
             pretraining_config=pretraining_config,
             device=pretraining_device,

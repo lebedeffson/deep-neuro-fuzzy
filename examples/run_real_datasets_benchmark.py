@@ -90,9 +90,31 @@ class DfflProfile:
     local_rule_generation_mode: str
     aggregate_rule_generation_mode: str
     decision_rule_generation_mode: str
+    aggregate_block_count: int = 1
+    aggregate_overlap: int = 0
+    local_max_rule_arity: int = 2
+    decision_max_rule_arity: int = 2
+    decision_three_terms: bool = False
     learning_rate_scale_regression: float = 1.0
     learning_rate_scale_classification: float = 1.0
     refinement_cycle_floor: int = 1
+    pretrain_refinement_rounds: int = 1
+    top_k_rules: int | None = None
+    input_group_size: int = 4
+    input_group_strategy: str = "contiguous"
+    input_group_correlation_weight: float = 0.7
+    local_prototype_term_limit: int = 2
+    aggregate_prototype_term_limit: int = 2
+    decision_prototype_term_limit: int = 2
+    local_prototype_scoring_mode: str = "max"
+    aggregate_prototype_scoring_mode: str = "max"
+    decision_prototype_scoring_mode: str = "max"
+    local_prototype_variable_pool_size: int | None = None
+    aggregate_prototype_variable_pool_size: int | None = None
+    decision_prototype_variable_pool_size: int | None = None
+    local_prototype_sample_size: int | None = 256
+    aggregate_prototype_sample_size: int | None = 256
+    decision_prototype_sample_size: int | None = 256
 
 
 def set_seed(seed: int) -> None:
@@ -119,6 +141,34 @@ def parse_dataset_names(raw: str) -> tuple[str, ...]:
     if not names:
         raise ValueError("At least one dataset name must be provided.")
     return names
+
+
+def parse_fuzzy_model_names(raw: str) -> tuple[str, ...]:
+    chunks = tuple(chunk.strip() for chunk in raw.split(",") if chunk.strip())
+    if not chunks:
+        raise ValueError("At least one fuzzy model must be provided.")
+    if len(chunks) == 1 and chunks[0].lower() == "all":
+        return FUZZY_MODEL_NAMES
+
+    aliases = {
+        "shallow": "ruanfis_shallow",
+        "stacked": "ruanfis_stacked_anfis",
+        "hierarchical": "ruanfis_hierarchical_anfis",
+        "hier": "ruanfis_hierarchical_anfis",
+        "dffl": "ruanfis_refined_deep",
+        "refined_deep": "ruanfis_refined_deep",
+    }
+    allowed = set(FUZZY_MODEL_NAMES)
+    resolved: list[str] = []
+    for chunk in chunks:
+        model_name = aliases.get(chunk.lower(), chunk)
+        if model_name not in allowed:
+            raise ValueError(
+                f"Unknown fuzzy model name: {chunk}. Allowed: all, {', '.join(FUZZY_MODEL_NAMES)}"
+            )
+        if model_name not in resolved:
+            resolved.append(model_name)
+    return tuple(resolved)
 
 
 def var3(name: str) -> FuzzyVariable:
@@ -226,6 +276,13 @@ PRIMARY_METRIC: dict[TaskType, str] = {
     "binary_classification": "f1",
 }
 
+FUZZY_MODEL_NAMES: tuple[str, ...] = (
+    "ruanfis_shallow",
+    "ruanfis_stacked_anfis",
+    "ruanfis_hierarchical_anfis",
+    "ruanfis_refined_deep",
+)
+
 
 DFFL_PROFILES: dict[str, DfflProfile] = {
     "baseline": DfflProfile(
@@ -246,17 +303,26 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
     "quality": DfflProfile(
         name="quality",
         local_concepts=3,
-        local_max_rules=12,
+        local_max_rules=14,
         aggregate_max_rules=20,
         decision_max_rules=14,
         stage2_width_min=4,
-        stage2_width_max=8,
-        local_rule_generation_mode="enumerate",
+        stage2_width_max=9,
+        local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
         learning_rate_scale_regression=1.0,
-        learning_rate_scale_classification=0.8,
+        learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
+        local_prototype_term_limit=3,
+        local_prototype_variable_pool_size=4,
+        aggregate_prototype_term_limit=3,
+        aggregate_prototype_variable_pool_size=8,
+        decision_prototype_term_limit=3,
+        decision_prototype_variable_pool_size=6,
+        local_prototype_sample_size=512,
+        aggregate_prototype_sample_size=512,
+        decision_prototype_sample_size=512,
     ),
     "quality_balanced": DfflProfile(
         name="quality_balanced",
@@ -270,8 +336,9 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
         learning_rate_scale_regression=1.0,
-        learning_rate_scale_classification=0.9,
+        learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
+        local_prototype_term_limit=3,
     ),
     "quality_tiny_reg": DfflProfile(
         name="quality_tiny_reg",
@@ -286,38 +353,79 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         decision_rule_generation_mode="prototype",
         # Keep architecture compact, but raise effective LR for tiny regression tasks.
         learning_rate_scale_regression=1.3333333333333333,
-        learning_rate_scale_classification=0.9,
+        learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
+        local_prototype_term_limit=3,
     ),
     "quality_large_cls": DfflProfile(
         name="quality_large_cls",
         local_concepts=2,
-        local_max_rules=6,
-        aggregate_max_rules=14,
-        decision_max_rules=10,
+        local_max_rules=10,
+        aggregate_max_rules=18,
+        decision_max_rules=12,
         stage2_width_min=4,
-        stage2_width_max=7,
+        stage2_width_max=9,
         local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
+        decision_max_rule_arity=2,
+        decision_three_terms=False,
         learning_rate_scale_regression=1.0,
-        learning_rate_scale_classification=0.8,
+        learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
+        pretrain_refinement_rounds=2,
+        input_group_strategy="target_corr",
+        input_group_correlation_weight=0.75,
+        local_prototype_term_limit=3,
+        local_prototype_scoring_mode="max",
+        local_prototype_variable_pool_size=4,
+        aggregate_prototype_term_limit=3,
+        aggregate_prototype_scoring_mode="max",
+        aggregate_prototype_variable_pool_size=10,
+        decision_prototype_term_limit=3,
+        decision_prototype_scoring_mode="max",
+        decision_prototype_variable_pool_size=8,
+        local_prototype_sample_size=1024,
+        aggregate_prototype_sample_size=1024,
+        decision_prototype_sample_size=1024,
     ),
     "quality_large_cls_plus": DfflProfile(
         name="quality_large_cls_plus",
         local_concepts=2,
-        local_max_rules=8,
-        aggregate_max_rules=18,
-        decision_max_rules=12,
+        local_max_rules=12,
+        # Larger aggregate rule budget improves cross-group interaction coverage on large binary tasks.
+        aggregate_max_rules=32,
+        # A leaner decision layer avoids rule dilution and keeps final reasoning compact.
+        decision_max_rules=8,
         stage2_width_min=4,
-        stage2_width_max=7,
-        local_rule_generation_mode="enumerate",
+        stage2_width_max=10,
+        aggregate_block_count=1,
+        aggregate_overlap=0,
+        local_max_rule_arity=2,
+        local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
+        decision_max_rule_arity=2,
+        decision_three_terms=False,
         learning_rate_scale_regression=1.0,
-        learning_rate_scale_classification=0.9,
+        learning_rate_scale_classification=1.1,
         refinement_cycle_floor=2,
+        pretrain_refinement_rounds=2,
+        input_group_size=4,
+        input_group_strategy="target_corr",
+        input_group_correlation_weight=0.8,
+        local_prototype_term_limit=3,
+        local_prototype_scoring_mode="max",
+        local_prototype_variable_pool_size=4,
+        aggregate_prototype_term_limit=3,
+        aggregate_prototype_scoring_mode="max",
+        aggregate_prototype_variable_pool_size=12,
+        decision_prototype_term_limit=3,
+        decision_prototype_scoring_mode="max",
+        decision_prototype_variable_pool_size=8,
+        local_prototype_sample_size=1024,
+        aggregate_prototype_sample_size=1024,
+        decision_prototype_sample_size=1024,
     ),
 }
 
@@ -368,12 +476,150 @@ def _make_groups(total_dim: int, group_size: int) -> tuple[tuple[int, ...], ...]
     return tuple(groups)
 
 
+def _feature_target_relevance(inputs: torch.Tensor, targets: torch.Tensor) -> np.ndarray:
+    features = inputs.detach().cpu().numpy().astype(np.float64, copy=False)
+    labels = targets.detach().cpu().numpy().reshape(-1).astype(np.float64, copy=False)
+    if features.ndim != 2:
+        raise ValueError(f"Expected 2D features, got {features.ndim}D.")
+    if labels.ndim != 1:
+        raise ValueError(f"Expected 1D targets, got {labels.ndim}D.")
+    if features.shape[0] != labels.shape[0]:
+        raise ValueError("Features and targets must have the same number of samples.")
+
+    centered_x = features - features.mean(axis=0, keepdims=True)
+    centered_y = labels - labels.mean()
+    denom_y = np.sqrt(np.sum(centered_y * centered_y))
+    denom_x = np.sqrt(np.sum(centered_x * centered_x, axis=0))
+    denominator = denom_x * denom_y
+    numerator = np.abs(centered_x.T @ centered_y)
+    relevance = np.zeros(features.shape[1], dtype=np.float64)
+    np.divide(numerator, denominator, out=relevance, where=denominator > 1e-12)
+    return np.clip(relevance, 0.0, 1.0)
+
+
+def _feature_feature_correlation(inputs: torch.Tensor) -> np.ndarray:
+    features = inputs.detach().cpu().numpy().astype(np.float64, copy=False)
+    centered = features - features.mean(axis=0, keepdims=True)
+    gram = centered.T @ centered
+    norms = np.sqrt(np.clip(np.diag(gram), a_min=0.0, a_max=None))
+    denominator = np.outer(norms, norms)
+    corr = np.zeros_like(gram)
+    np.divide(gram, denominator, out=corr, where=denominator > 1e-12)
+    corr = np.abs(corr)
+    np.fill_diagonal(corr, 1.0)
+    return np.clip(corr, 0.0, 1.0)
+
+
+def _make_target_corr_groups(
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    group_size: int,
+    correlation_weight: float,
+) -> tuple[tuple[int, ...], ...]:
+    if group_size <= 0:
+        raise ValueError("group_size must be positive.")
+    input_dim = int(inputs.shape[1])
+    if input_dim <= group_size or inputs.shape[0] < 4:
+        return _make_groups(input_dim, group_size=group_size)
+
+    corr_weight = min(1.0, max(0.0, float(correlation_weight)))
+    relevance = _feature_target_relevance(inputs, targets)
+    pairwise_corr = _feature_feature_correlation(inputs)
+
+    priority = np.argsort(-relevance, kind="stable").tolist()
+    remaining = set(range(input_dim))
+    groups: list[tuple[int, ...]] = []
+
+    while remaining:
+        seed = next((idx for idx in priority if idx in remaining), min(remaining))
+        current_group = [int(seed)]
+        remaining.remove(seed)
+
+        while len(current_group) < group_size and remaining:
+            best_candidate = None
+            best_score = float("-inf")
+            for candidate in remaining:
+                cohesion = float(np.mean(pairwise_corr[candidate, current_group]))
+                score = corr_weight * cohesion + (1.0 - corr_weight) * float(relevance[candidate])
+                if score > best_score + 1e-12:
+                    best_score = score
+                    best_candidate = int(candidate)
+                    continue
+                if abs(score - best_score) <= 1e-12 and best_candidate is not None and candidate < best_candidate:
+                    best_candidate = int(candidate)
+            if best_candidate is None:
+                break
+            current_group.append(best_candidate)
+            remaining.remove(best_candidate)
+
+        groups.append(tuple(current_group))
+
+    return tuple(groups)
+
+
+def make_dffl_input_groups(
+    profile: DfflProfile,
+    *,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+) -> tuple[tuple[int, ...], ...]:
+    if profile.input_group_strategy == "contiguous":
+        return _make_groups(int(train_inputs.shape[1]), group_size=profile.input_group_size)
+    if profile.input_group_strategy == "target_corr":
+        return _make_target_corr_groups(
+            train_inputs,
+            train_targets,
+            group_size=profile.input_group_size,
+            correlation_weight=profile.input_group_correlation_weight,
+        )
+    raise ValueError(
+        f"Unsupported input_group_strategy={profile.input_group_strategy!r}. "
+        "Expected 'contiguous' or 'target_corr'."
+    )
+
+
 def _concept_width(input_dim: int) -> int:
     return min(8, max(4, int(round(input_dim**0.5))))
 
 
 def _hidden_width(input_dim: int) -> int:
     return min(6, max(3, _concept_width(input_dim) // 2 + 1))
+
+
+def _split_even(total: int, parts: int) -> tuple[int, ...]:
+    if total <= 0:
+        raise ValueError("total must be positive.")
+    if parts <= 0:
+        raise ValueError("parts must be positive.")
+    base = total // parts
+    remainder = total % parts
+    return tuple(base + (1 if index < remainder else 0) for index in range(parts))
+
+
+def _build_overlapping_windows(total: int, blocks: int, overlap: int) -> tuple[tuple[int, ...], ...]:
+    if total <= 0:
+        raise ValueError("total must be positive.")
+    if blocks <= 0:
+        raise ValueError("blocks must be positive.")
+    if overlap < 0:
+        raise ValueError("overlap must be non-negative.")
+    if blocks == 1:
+        return (tuple(range(total)),)
+
+    block_span = int(np.ceil(total / blocks))
+    windows: list[tuple[int, ...]] = []
+    for block_index in range(blocks):
+        start = block_index * block_span
+        end = min(total, (block_index + 1) * block_span)
+        if block_index > 0:
+            start = max(0, start - overlap)
+        if block_index < blocks - 1:
+            end = min(total, end + overlap)
+        if end <= start:
+            end = min(total, start + 1)
+        windows.append(tuple(range(start, end)))
+    return tuple(windows)
 
 
 def build_shallow_config(input_dim: int) -> ShallowFuzzyModelConfig:
@@ -494,8 +740,13 @@ def build_hierarchical_anfis_config(input_dim: int) -> HierarchicalAnfisModelCon
     )
 
 
-def build_dffl_config(input_dim: int, profile: DfflProfile) -> HierarchicalModelConfig:
-    groups = _make_groups(input_dim, group_size=4)
+def build_dffl_config(
+    input_dim: int,
+    profile: DfflProfile,
+    *,
+    input_groups: tuple[tuple[int, ...], ...] | None = None,
+) -> HierarchicalModelConfig:
+    groups = input_groups or _make_groups(input_dim, group_size=profile.input_group_size)
     stage_1_blocks = []
     for block_index, indices in enumerate(groups):
         stage_1_blocks.append(
@@ -507,9 +758,13 @@ def build_dffl_config(input_dim: int, profile: DfflProfile) -> HierarchicalModel
                 concept_names=tuple(
                     f"s1_{block_index}_{concept_index}" for concept_index in range(profile.local_concepts)
                 ),
-                max_rule_arity=min(2, len(indices)),
+                max_rule_arity=min(profile.local_max_rule_arity, len(indices)),
                 max_rules=profile.local_max_rules,
                 rule_generation_mode=profile.local_rule_generation_mode,
+                prototype_term_limit=profile.local_prototype_term_limit,
+                prototype_scoring_mode=profile.local_prototype_scoring_mode,
+                prototype_variable_pool_size=profile.local_prototype_variable_pool_size,
+                prototype_sample_size=profile.local_prototype_sample_size,
             )
         )
 
@@ -518,6 +773,38 @@ def build_dffl_config(input_dim: int, profile: DfflProfile) -> HierarchicalModel
         profile.stage2_width_max,
         max(profile.stage2_width_min, len(groups) + 1),
     )
+    aggregate_blocks = max(1, min(profile.aggregate_block_count, stage_2_width))
+    aggregate_rule_budget = _split_even(profile.aggregate_max_rules, aggregate_blocks)
+    aggregate_output_dims = _split_even(stage_2_width, aggregate_blocks)
+    aggregate_input_windows = _build_overlapping_windows(
+        stage_1_width,
+        aggregate_blocks,
+        overlap=profile.aggregate_overlap,
+    )
+
+    stage_2_blocks: list[TransparentBlockConfig] = []
+    concept_offset = 0
+    for block_index in range(aggregate_blocks):
+        block_output_dim = aggregate_output_dims[block_index]
+        block_concept_names = tuple(f"s2_{concept_offset + i}" for i in range(block_output_dim))
+        concept_offset += block_output_dim
+        block_input_indices = aggregate_input_windows[block_index]
+        stage_2_blocks.append(
+            TransparentBlockConfig(
+                name=f"dffl_aggregate_{block_index}",
+                input_indices=block_input_indices,
+                variables=tuple(var3(f"s1_{i}") for i in block_input_indices),
+                n_concepts=block_output_dim,
+                concept_names=block_concept_names,
+                max_rule_arity=2,
+                max_rules=aggregate_rule_budget[block_index],
+                rule_generation_mode=profile.aggregate_rule_generation_mode,
+                prototype_term_limit=profile.aggregate_prototype_term_limit,
+                prototype_scoring_mode=profile.aggregate_prototype_scoring_mode,
+                prototype_variable_pool_size=profile.aggregate_prototype_variable_pool_size,
+                prototype_sample_size=profile.aggregate_prototype_sample_size,
+            )
+        )
 
     return HierarchicalModelConfig(
         input_dim=input_dim,
@@ -528,28 +815,24 @@ def build_dffl_config(input_dim: int, profile: DfflProfile) -> HierarchicalModel
             ),
             StageConfig(
                 name="dffl_stage_2_aggregate",
-                blocks=(
-                    TransparentBlockConfig(
-                        name="dffl_aggregate",
-                        input_indices=tuple(range(stage_1_width)),
-                        variables=tuple(var3(f"s1_{i}") for i in range(stage_1_width)),
-                        n_concepts=stage_2_width,
-                        concept_names=tuple(f"s2_{i}" for i in range(stage_2_width)),
-                        max_rule_arity=2,
-                        max_rules=profile.aggregate_max_rules,
-                        rule_generation_mode=profile.aggregate_rule_generation_mode,
-                    ),
-                ),
+                blocks=tuple(stage_2_blocks),
             ),
         ),
         decision_layer=DecisionLayerConfig(
             name="decision",
-            variables=tuple(var2(f"s2_{i}") for i in range(stage_2_width)),
+            variables=tuple(
+                (var3(f"s2_{i}") if profile.decision_three_terms else var2(f"s2_{i}"))
+                for i in range(stage_2_width)
+            ),
             output_dim=1,
             output_names=("target",),
-            max_rule_arity=2,
+            max_rule_arity=profile.decision_max_rule_arity,
             max_rules=profile.decision_max_rules,
             rule_generation_mode=profile.decision_rule_generation_mode,
+            prototype_term_limit=profile.decision_prototype_term_limit,
+            prototype_scoring_mode=profile.decision_prototype_scoring_mode,
+            prototype_variable_pool_size=profile.decision_prototype_variable_pool_size,
+            prototype_sample_size=profile.decision_prototype_sample_size,
         ),
     )
 
@@ -572,6 +855,7 @@ def _choose_best_classification_threshold(
     validation_inputs: torch.Tensor,
     validation_targets: torch.Tensor,
     default_threshold: float,
+    top_k_rules: int | None = None,
 ) -> float:
     if validation_inputs.numel() == 0 or validation_targets.numel() == 0:
         return default_threshold
@@ -583,12 +867,15 @@ def _choose_best_classification_threshold(
 
     model.eval()
     with torch.no_grad():
-        validation_logits = model(validation_inputs.to(device=device, dtype=torch.float32)).detach().cpu()
+        validation_logits = model(
+            validation_inputs.to(device=device, dtype=torch.float32),
+            top_k_rules=top_k_rules,
+        ).detach().cpu()
 
     best_threshold = float(default_threshold)
     best_f1 = float("-inf")
     validation_targets_cpu = validation_targets.detach().cpu()
-    for threshold in np.linspace(0.30, 0.70, 21):
+    for threshold in np.linspace(0.05, 0.95, 91):
         metrics = compute_metrics(
             "binary_classification",
             validation_logits,
@@ -693,6 +980,8 @@ def run_single_seed_dataset_benchmark(
     classification_threshold: float,
     tune_fuzzy_threshold: bool,
     device: str | None,
+    fuzzy_models: tuple[str, ...] = FUZZY_MODEL_NAMES,
+    include_sklearn: bool = True,
 ):
     phase_started_at = time.perf_counter()
     set_seed(seed)
@@ -730,8 +1019,20 @@ def run_single_seed_dataset_benchmark(
         n_samples=split.n_samples,
         input_dim=split.input_dim,
     )
+    dffl_input_groups = make_dffl_input_groups(
+        dffl_profile,
+        train_inputs=train_inputs,
+        train_targets=train_targets,
+    )
     progress_log(
-        f"seed={seed} profile: dffl={dffl_profile.name}, task={spec.task_type}, device={device or 'default'}"
+        "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, groups={groups}".format(
+            seed=seed,
+            name=dffl_profile.name,
+            task=spec.task_type,
+            device=device or "default",
+            grouping=dffl_profile.input_group_strategy,
+            groups=len(dffl_input_groups),
+        )
     )
 
     dffl_learning_rate_effective = (
@@ -741,212 +1042,192 @@ def run_single_seed_dataset_benchmark(
     )
     dffl_refinement_cycles = max(refinement_cycles, dffl_profile.refinement_cycle_floor)
 
-    phase_started_at = time.perf_counter()
-    progress_log(f"seed={seed} model=dffl: start")
-    dffl_result = build_refined_hierarchical_model(
-        build_dffl_config(split.input_dim, profile=dffl_profile),
-        train_inputs=train_inputs,
-        train_targets=train_targets,
-        validation_inputs=validation_inputs,
-        validation_targets=validation_targets,
-        bootstrap_config=BootstrapConfig(decision_task_type=spec.task_type),
-        pretraining_config=StagewisePretrainingConfig(
-            task_type=spec.task_type,
-            epochs_per_stage=pretrain_epochs,
-            decision_epochs=decision_pretrain_epochs,
-            learning_rate=dffl_learning_rate_effective,
-            batch_size=batch_size,
-            shuffle=True,
-        ),
-        training_config=TrainingConfig(
-            task_type=spec.task_type,
-            max_epochs=max_epochs,
-            learning_rate=dffl_learning_rate_effective,
-            patience=min(patience, max_epochs),
-            batch_size=batch_size,
-            shuffle=True,
-            classification_threshold=classification_threshold,
-            monitor_metric="f1" if spec.task_type == "binary_classification" else None,
-            monitor_mode="max" if spec.task_type == "binary_classification" else None,
-            device=device,
-        ),
-        refinement_loop_config=RefinementLoopConfig(
-            max_cycles=dffl_refinement_cycles,
-            patience=1,
-            min_delta=1e-4,
-        ),
-    )
-    progress_log(f"seed={seed} model=dffl: done in {time.perf_counter() - phase_started_at:.2f}s")
+    trained_fuzzy_models: dict[str, torch.nn.Module] = {}
+    model_top_k_rules: dict[str, int | None] = {}
 
-    phase_started_at = time.perf_counter()
-    progress_log(f"seed={seed} model=shallow: bootstrap+train start")
-    shallow_model = build_bootstrapped_shallow_model(
-        build_shallow_config(split.input_dim),
-        sample_inputs=train_inputs,
-        sample_targets=train_targets,
-        bootstrap_config=BootstrapConfig(decision_task_type=spec.task_type),
-        device=device,
-    )
-    shallow_trainer = FuzzyTrainer(
-        shallow_model,
-        TrainingConfig(
-            task_type=spec.task_type,
-            max_epochs=max_epochs,
-            learning_rate=fuzzy_learning_rate,
-            patience=min(patience, max_epochs),
-            batch_size=batch_size,
-            shuffle=True,
-            classification_threshold=classification_threshold,
-            device=device,
-        ),
-    )
-    shallow_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
-    progress_log(f"seed={seed} model=shallow: done in {time.perf_counter() - phase_started_at:.2f}s")
+    if "ruanfis_refined_deep" in fuzzy_models:
+        phase_started_at = time.perf_counter()
+        progress_log(f"seed={seed} model=dffl: start")
+        dffl_bootstrap_config = BootstrapConfig(
+            decision_task_type=spec.task_type,
+            hidden_high=0.75 if spec.task_type == "binary_classification" else 0.8,
+            hidden_low=0.25 if spec.task_type == "binary_classification" else 0.2,
+            gate_floor=0.15,
+            gate_ceiling=0.9,
+        )
+        dffl_result = build_refined_hierarchical_model(
+            build_dffl_config(split.input_dim, profile=dffl_profile, input_groups=dffl_input_groups),
+            train_inputs=train_inputs,
+            train_targets=train_targets,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            bootstrap_config=dffl_bootstrap_config,
+            pretraining_config=StagewisePretrainingConfig(
+                task_type=spec.task_type,
+                epochs_per_stage=pretrain_epochs,
+                decision_epochs=decision_pretrain_epochs,
+                refinement_rounds=dffl_profile.pretrain_refinement_rounds,
+                learning_rate=dffl_learning_rate_effective,
+                batch_size=batch_size,
+                shuffle=True,
+                rule_sparsity_weight=0.0,
+                stage_selection_metric="auto",
+                stage_selection_threshold=classification_threshold,
+            ),
+            training_config=TrainingConfig(
+                task_type=spec.task_type,
+                max_epochs=max_epochs,
+                learning_rate=dffl_learning_rate_effective,
+                patience=min(patience, max_epochs),
+                batch_size=batch_size,
+                shuffle=True,
+                classification_threshold=classification_threshold,
+                monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+                monitor_mode="max" if spec.task_type == "binary_classification" else None,
+                top_k_rules=dffl_profile.top_k_rules,
+                rule_sparsity_weight=0.0,
+                rule_length_weight=0.0,
+                prune_after_fit=False,
+                device=device,
+            ),
+            refinement_loop_config=RefinementLoopConfig(
+                max_cycles=dffl_refinement_cycles,
+                patience=1,
+                min_delta=1e-4,
+            ),
+        )
+        trained_fuzzy_models["ruanfis_refined_deep"] = dffl_result.model
+        model_top_k_rules["ruanfis_refined_deep"] = dffl_profile.top_k_rules
+        progress_log(f"seed={seed} model=dffl: done in {time.perf_counter() - phase_started_at:.2f}s")
 
-    phase_started_at = time.perf_counter()
-    progress_log(f"seed={seed} model=stacked: build+train start")
-    stacked_model = build_stacked_anfis_model(
-        build_stacked_config(split.input_dim),
-        sample_inputs=train_inputs,
-    )
-    stacked_trainer = FuzzyTrainer(
-        stacked_model,
-        TrainingConfig(
-            task_type=spec.task_type,
-            max_epochs=max_epochs,
-            learning_rate=fuzzy_learning_rate,
-            patience=min(patience, max_epochs),
-            batch_size=batch_size,
-            shuffle=True,
-            classification_threshold=classification_threshold,
+    if "ruanfis_shallow" in fuzzy_models:
+        phase_started_at = time.perf_counter()
+        progress_log(f"seed={seed} model=shallow: bootstrap+train start")
+        shallow_model = build_bootstrapped_shallow_model(
+            build_shallow_config(split.input_dim),
+            sample_inputs=train_inputs,
+            sample_targets=train_targets,
+            bootstrap_config=BootstrapConfig(decision_task_type=spec.task_type),
             device=device,
-        ),
-    )
-    stacked_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
-    progress_log(f"seed={seed} model=stacked: done in {time.perf_counter() - phase_started_at:.2f}s")
+        )
+        shallow_trainer = FuzzyTrainer(
+            shallow_model,
+            TrainingConfig(
+                task_type=spec.task_type,
+                max_epochs=max_epochs,
+                learning_rate=fuzzy_learning_rate,
+                patience=min(patience, max_epochs),
+                batch_size=batch_size,
+                shuffle=True,
+                classification_threshold=classification_threshold,
+                device=device,
+            ),
+        )
+        shallow_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
+        trained_fuzzy_models["ruanfis_shallow"] = shallow_model
+        model_top_k_rules["ruanfis_shallow"] = None
+        progress_log(f"seed={seed} model=shallow: done in {time.perf_counter() - phase_started_at:.2f}s")
 
-    phase_started_at = time.perf_counter()
-    progress_log(f"seed={seed} model=hierarchical_anfis: build+train start")
-    hierarchical_anfis_model = build_hierarchical_anfis_model(
-        build_hierarchical_anfis_config(split.input_dim),
-        sample_inputs=train_inputs,
-    )
-    hierarchical_anfis_trainer = FuzzyTrainer(
-        hierarchical_anfis_model,
-        TrainingConfig(
+    if "ruanfis_stacked_anfis" in fuzzy_models:
+        phase_started_at = time.perf_counter()
+        progress_log(f"seed={seed} model=stacked: build+train start")
+        stacked_model = build_stacked_anfis_model(
+            build_stacked_config(split.input_dim),
+            sample_inputs=train_inputs,
+        )
+        stacked_trainer = FuzzyTrainer(
+            stacked_model,
+            TrainingConfig(
+                task_type=spec.task_type,
+                max_epochs=max_epochs,
+                learning_rate=fuzzy_learning_rate,
+                patience=min(patience, max_epochs),
+                batch_size=batch_size,
+                shuffle=True,
+                classification_threshold=classification_threshold,
+                device=device,
+            ),
+        )
+        stacked_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
+        trained_fuzzy_models["ruanfis_stacked_anfis"] = stacked_model
+        model_top_k_rules["ruanfis_stacked_anfis"] = None
+        progress_log(f"seed={seed} model=stacked: done in {time.perf_counter() - phase_started_at:.2f}s")
+
+    if "ruanfis_hierarchical_anfis" in fuzzy_models:
+        phase_started_at = time.perf_counter()
+        progress_log(f"seed={seed} model=hierarchical_anfis: build+train start")
+        hierarchical_anfis_model = build_hierarchical_anfis_model(
+            build_hierarchical_anfis_config(split.input_dim),
+            sample_inputs=train_inputs,
+        )
+        hierarchical_anfis_trainer = FuzzyTrainer(
+            hierarchical_anfis_model,
+            TrainingConfig(
+                task_type=spec.task_type,
+                max_epochs=max_epochs,
+                learning_rate=fuzzy_learning_rate,
+                patience=min(patience, max_epochs),
+                batch_size=batch_size,
+                shuffle=True,
+                classification_threshold=classification_threshold,
+                device=device,
+            ),
+        )
+        hierarchical_anfis_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
+        trained_fuzzy_models["ruanfis_hierarchical_anfis"] = hierarchical_anfis_model
+        model_top_k_rules["ruanfis_hierarchical_anfis"] = None
+        progress_log(
+            f"seed={seed} model=hierarchical_anfis: done in {time.perf_counter() - phase_started_at:.2f}s"
+        )
+
+    sklearn_results: tuple = ()
+    if include_sklearn:
+        phase_started_at = time.perf_counter()
+        progress_log(f"seed={seed} sklearn: start")
+        sklearn_results = run_tabular_benchmark(
+            train_inputs=train_inputs,
+            train_targets=train_targets,
+            test_inputs=test_inputs,
+            test_targets=test_targets,
             task_type=spec.task_type,
-            max_epochs=max_epochs,
-            learning_rate=fuzzy_learning_rate,
-            patience=min(patience, max_epochs),
-            batch_size=batch_size,
-            shuffle=True,
+            random_state=seed,
             classification_threshold=classification_threshold,
-            device=device,
-        ),
-    )
-    hierarchical_anfis_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
-    progress_log(
-        f"seed={seed} model=hierarchical_anfis: done in {time.perf_counter() - phase_started_at:.2f}s"
-    )
-
-    phase_started_at = time.perf_counter()
-    progress_log(f"seed={seed} sklearn: start")
-    sklearn_results = run_tabular_benchmark(
-        train_inputs=train_inputs,
-        train_targets=train_targets,
-        test_inputs=test_inputs,
-        test_targets=test_targets,
-        task_type=spec.task_type,
-        random_state=seed,
-        classification_threshold=classification_threshold,
-    )
-    progress_log(f"seed={seed} sklearn: done in {time.perf_counter() - phase_started_at:.2f}s")
+        )
+        progress_log(f"seed={seed} sklearn: done in {time.perf_counter() - phase_started_at:.2f}s")
 
     phase_started_at = time.perf_counter()
     progress_log(f"seed={seed} fuzzy_eval: start")
-    model_thresholds = {
-        "ruanfis_shallow": classification_threshold,
-        "ruanfis_stacked_anfis": classification_threshold,
-        "ruanfis_hierarchical_anfis": classification_threshold,
-        "ruanfis_refined_deep": classification_threshold,
-    }
+    model_thresholds = {model_name: classification_threshold for model_name in trained_fuzzy_models.keys()}
     if tune_fuzzy_threshold and spec.task_type == "binary_classification":
-        model_thresholds["ruanfis_shallow"] = _choose_best_classification_threshold(
-            shallow_model,
-            validation_inputs=validation_inputs,
-            validation_targets=validation_targets,
-            default_threshold=classification_threshold,
-        )
-        model_thresholds["ruanfis_stacked_anfis"] = _choose_best_classification_threshold(
-            stacked_model,
-            validation_inputs=validation_inputs,
-            validation_targets=validation_targets,
-            default_threshold=classification_threshold,
-        )
-        model_thresholds["ruanfis_hierarchical_anfis"] = _choose_best_classification_threshold(
-            hierarchical_anfis_model,
-            validation_inputs=validation_inputs,
-            validation_targets=validation_targets,
-            default_threshold=classification_threshold,
-        )
-        model_thresholds["ruanfis_refined_deep"] = _choose_best_classification_threshold(
-            dffl_result.model,
-            validation_inputs=validation_inputs,
-            validation_targets=validation_targets,
-            default_threshold=classification_threshold,
-        )
+        for model_name, model in trained_fuzzy_models.items():
+            model_thresholds[model_name] = _choose_best_classification_threshold(
+                model,
+                validation_inputs=validation_inputs,
+                validation_targets=validation_targets,
+                default_threshold=classification_threshold,
+                top_k_rules=model_top_k_rules.get(model_name),
+            )
         progress_log(
-            "seed={seed} threshold_tuning: shallow={shallow:.2f}, stacked={stacked:.2f}, "
-            "hierarchical={hierarchical:.2f}, dffl={dffl:.2f}".format(
+            "seed={seed} threshold_tuning: {pairs}".format(
                 seed=seed,
-                shallow=model_thresholds["ruanfis_shallow"],
-                stacked=model_thresholds["ruanfis_stacked_anfis"],
-                hierarchical=model_thresholds["ruanfis_hierarchical_anfis"],
-                dffl=model_thresholds["ruanfis_refined_deep"],
+                pairs=", ".join(f"{name}={value:.2f}" for name, value in model_thresholds.items()),
             )
         )
 
-    fuzzy_results = (
+    fuzzy_results = tuple(
         evaluate_trained_model(
-            "ruanfis_shallow",
-            shallow_model,
+            model_name,
+            trained_fuzzy_models[model_name],
             task_type=spec.task_type,
             train_inputs=train_inputs,
             train_targets=train_targets,
             test_inputs=test_inputs,
             test_targets=test_targets,
-            classification_threshold=model_thresholds["ruanfis_shallow"],
-        ),
-        evaluate_trained_model(
-            "ruanfis_stacked_anfis",
-            stacked_model,
-            task_type=spec.task_type,
-            train_inputs=train_inputs,
-            train_targets=train_targets,
-            test_inputs=test_inputs,
-            test_targets=test_targets,
-            classification_threshold=model_thresholds["ruanfis_stacked_anfis"],
-        ),
-        evaluate_trained_model(
-            "ruanfis_hierarchical_anfis",
-            hierarchical_anfis_model,
-            task_type=spec.task_type,
-            train_inputs=train_inputs,
-            train_targets=train_targets,
-            test_inputs=test_inputs,
-            test_targets=test_targets,
-            classification_threshold=model_thresholds["ruanfis_hierarchical_anfis"],
-        ),
-        evaluate_trained_model(
-            "ruanfis_refined_deep",
-            dffl_result.model,
-            task_type=spec.task_type,
-            train_inputs=train_inputs,
-            train_targets=train_targets,
-            test_inputs=test_inputs,
-            test_targets=test_targets,
-            classification_threshold=model_thresholds["ruanfis_refined_deep"],
-        ),
+            classification_threshold=model_thresholds[model_name],
+            top_k_rules=model_top_k_rules.get(model_name),
+        )
+        for model_name in FUZZY_MODEL_NAMES
+        if model_name in trained_fuzzy_models
     )
     progress_log(f"seed={seed} fuzzy_eval: done in {time.perf_counter() - phase_started_at:.2f}s")
     progress_log(f"seed={seed} all models: complete")
@@ -988,12 +1269,20 @@ def build_cross_dataset_summary(
     dataset_results: dict[str, MultiSeedBenchmarkResult],
     specs: dict[str, DatasetSpec],
 ) -> str:
-    fuzzy_model_names = (
-        "ruanfis_shallow",
-        "ruanfis_stacked_anfis",
-        "ruanfis_hierarchical_anfis",
-        "ruanfis_refined_deep",
+    if not dataset_results:
+        return "| model | avg_rank | wins | avg_rules | avg_active_rule_jaccard |\n| --- | --- | --- | --- | --- |"
+
+    per_dataset_available = {
+        dataset_name: {entry.model_name for entry in multi_seed.aggregated_results}
+        for dataset_name, multi_seed in dataset_results.items()
+    }
+    fuzzy_model_names = tuple(
+        model_name
+        for model_name in FUZZY_MODEL_NAMES
+        if all(model_name in available for available in per_dataset_available.values())
     )
+    if not fuzzy_model_names:
+        return "| model | avg_rank | wins | avg_rules | avg_active_rule_jaccard |\n| --- | --- | --- | --- | --- |"
 
     per_dataset_scores: dict[str, dict[str, float]] = {}
     per_dataset_ranks: dict[str, dict[str, float]] = {}
@@ -1079,12 +1368,7 @@ def build_interpretability_report(
     *,
     top_rules: int = 8,
 ) -> str:
-    fuzzy_model_names = (
-        "ruanfis_shallow",
-        "ruanfis_stacked_anfis",
-        "ruanfis_hierarchical_anfis",
-        "ruanfis_refined_deep",
-    )
+    fuzzy_model_names = FUZZY_MODEL_NAMES
 
     lines: list[str] = [
         "# Interpretable Rule Structure Report",
@@ -1196,6 +1480,21 @@ def main() -> None:
         default=None,
         help="Training device for fuzzy models, e.g. 'cpu' or 'cuda'. If omitted, use model default.",
     )
+    parser.add_argument(
+        "--fuzzy-models",
+        type=str,
+        default="all",
+        help=(
+            "Comma-separated fuzzy models: all, "
+            "ruanfis_shallow, ruanfis_stacked_anfis, ruanfis_hierarchical_anfis, ruanfis_refined_deep "
+            "(aliases: shallow, stacked, hierarchical, dffl)."
+        ),
+    )
+    parser.add_argument(
+        "--skip-sklearn",
+        action="store_true",
+        help="Skip sklearn baselines for fast fuzzy-only tuning.",
+    )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--summary-table-output", type=Path, default=None)
     parser.add_argument("--json-output", type=Path, default=None)
@@ -1209,6 +1508,7 @@ def main() -> None:
         raise ValueError(f"Unknown dataset names: {', '.join(unknown)}. Available: {', '.join(DATASETS.keys())}")
 
     seeds = parse_seeds(args.seeds)
+    fuzzy_models = parse_fuzzy_model_names(args.fuzzy_models)
 
     dataset_results: dict[str, MultiSeedBenchmarkResult] = {}
     dataset_reports: dict[str, str] = {}
@@ -1247,6 +1547,8 @@ def main() -> None:
                 classification_threshold=args.classification_threshold,
                 tune_fuzzy_threshold=args.tune_fuzzy_threshold,
                 device=args.device,
+                fuzzy_models=fuzzy_models,
+                include_sklearn=not args.skip_sklearn,
             )
             per_seed_results.append(tuple(seed_results))
             print(
@@ -1287,6 +1589,8 @@ def main() -> None:
         f"seeds: {', '.join(str(seed) for seed in seeds)}",
         f"train_noise_sigma (regression only): {args.train_noise_sigma:.4f}",
         f"dffl_profile: {args.dffl_profile}",
+        f"fuzzy_models: {', '.join(fuzzy_models)}",
+        f"sklearn_baselines: {'off' if args.skip_sklearn else 'on'}",
         "",
     ]
     for dataset_name in dataset_names:
@@ -1316,6 +1620,8 @@ def main() -> None:
             "seeds": list(seeds),
             "train_noise_sigma": float(args.train_noise_sigma),
             "dffl_profile": args.dffl_profile,
+            "fuzzy_models": list(fuzzy_models),
+            "skip_sklearn": bool(args.skip_sklearn),
             "dataset_results": {
                 dataset_name: serialize_multi_seed_benchmark_result(result)
                 for dataset_name, result in dataset_results.items()

@@ -87,7 +87,22 @@ class BaseFuzzyRuleLayer(nn.Module):
                 pruned_weights = torch.zeros_like(raw_rule_weights)
                 pruned_weights.scatter_(1, indices, values)
                 raw_rule_weights = pruned_weights
-        return raw_rule_weights / (raw_rule_weights.sum(dim=1, keepdim=True) + self.epsilon)
+        denominator = raw_rule_weights.sum(dim=1, keepdim=True)
+        normalized = raw_rule_weights / denominator.clamp_min(self.epsilon)
+        fallback_mask = denominator <= self.epsilon
+        if fallback_mask.any():
+            uniform = torch.full_like(normalized, fill_value=1.0 / float(self.n_rules))
+            normalized = torch.where(fallback_mask.expand_as(normalized), uniform, normalized)
+        if not torch.isfinite(normalized).all():
+            normalized = torch.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
+            denom = normalized.sum(dim=1, keepdim=True)
+            safe_mask = denom > self.epsilon
+            normalized = torch.where(
+                safe_mask.expand_as(normalized),
+                normalized / denom.clamp_min(self.epsilon),
+                torch.full_like(normalized, fill_value=1.0 / float(self.n_rules)),
+            )
+        return normalized
 
     def _build_variable_traces(self, memberships: tuple[Tensor, ...]) -> tuple[VariableTrace, ...]:
         traces: list[VariableTrace] = []

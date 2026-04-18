@@ -15,6 +15,7 @@ from .builders import (
     build_stage,
 )
 from .model import DeepFuzzyFeatureModel
+from .metrics import compute_metrics
 from .regularizers import (
     concept_binarization_penalty,
     concept_orthogonality_penalty,
@@ -34,6 +35,8 @@ class BootstrapConfig:
     gate_ceiling: float = 0.85
     decision_task_type: str = "regression"
     decision_binary_target_clip: float = 0.05
+    decision_wls_ridge: float = 1e-4
+    decision_wls_min_effective_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,8 @@ class StagewisePretrainingConfig:
     membership_coverage_weight: float = 0.0
     membership_min_coverage: float = 0.6
     classification_target_clip: float = 0.05
+    stage_selection_metric: str = "loss"  # "auto" | "loss" | "f1"
+    stage_selection_threshold: float = 0.5
 
 
 def _resolve_device(
@@ -118,6 +123,39 @@ def _task_loss_from_predictions(task_type: str, predictions: Tensor, targets: Te
     if task_type == "binary_classification":
         return F.binary_cross_entropy_with_logits(predictions, targets)
     raise ValueError(f"Unsupported task_type={task_type!r}. Expected 'regression' or 'binary_classification'.")
+
+
+def _resolve_stage_selection_metric(pretrain: StagewisePretrainingConfig) -> str:
+    metric = pretrain.stage_selection_metric.strip().lower()
+    if metric == "auto":
+        return "f1" if pretrain.task_type == "binary_classification" else "loss"
+    if metric not in {"loss", "f1"}:
+        raise ValueError(
+            f"Unsupported stage_selection_metric={pretrain.stage_selection_metric!r}. "
+            "Expected 'auto', 'loss' or 'f1'."
+        )
+    if metric == "f1" and pretrain.task_type != "binary_classification":
+        raise ValueError("stage_selection_metric='f1' is only supported for binary_classification.")
+    return metric
+
+
+def _candidate_selection_score(
+    pretrain: StagewisePretrainingConfig,
+    predictions: Tensor,
+    targets: Tensor,
+) -> tuple[float, bool]:
+    metric = _resolve_stage_selection_metric(pretrain)
+    if metric == "loss":
+        score = float(_task_loss_from_predictions(pretrain.task_type, predictions, targets).item())
+        return score, False
+
+    metrics = compute_metrics(
+        "binary_classification",
+        predictions,
+        targets,
+        classification_threshold=float(pretrain.stage_selection_threshold),
+    )
+    return float(metrics["f1"]), True
 
 
 def _iter_batches(inputs: Tensor, targets: Tensor, batch_size: int | None, shuffle: bool):
@@ -353,6 +391,7 @@ def initialize_decision_layer_from_samples(
     with torch.no_grad():
         memberships = layer._fuzzify(local_inputs)
         raw_rule_weights = layer._compute_raw_rule_weights(memberships)
+        normalized_rule_weights = layer._normalize_rule_weights(raw_rule_weights)
         support = raw_rule_weights.mean(dim=0)
         gate_probabilities = _support_to_gate_probabilities(
             support,
@@ -400,13 +439,50 @@ def initialize_decision_layer_from_samples(
             ],
             dim=1,
         )
-        solution = torch.linalg.lstsq(design, regression_targets).solution
-        solution = solution[: design.size(1)]
-        bias = solution[0]
-        weights = solution[1:]
 
-        layer.rule_bias.copy_(bias.unsqueeze(0).expand_as(layer.rule_bias))
-        layer.rule_weights.copy_(weights.unsqueeze(0).expand_as(layer.rule_weights))
+        ridge = float(bootstrap.decision_wls_ridge)
+        if ridge < 0.0:
+            raise ValueError("decision_wls_ridge must be non-negative.")
+        min_effective_weight = float(bootstrap.decision_wls_min_effective_weight)
+        if min_effective_weight < 0.0:
+            raise ValueError("decision_wls_min_effective_weight must be non-negative.")
+
+        def _solve_weighted_linear(sample_weights: Tensor) -> Tensor:
+            sqrt_weights = sample_weights.clamp_min(0.0).sqrt().unsqueeze(-1)
+            weighted_design = design * sqrt_weights
+            weighted_targets = regression_targets * sqrt_weights
+
+            if ridge > 0.0:
+                feature_dim = weighted_design.size(1)
+                gram = weighted_design.transpose(0, 1) @ weighted_design
+                rhs = weighted_design.transpose(0, 1) @ weighted_targets
+                regularizer = torch.eye(feature_dim, device=design.device, dtype=design.dtype) * ridge
+                try:
+                    return torch.linalg.solve(gram + regularizer, rhs)
+                except RuntimeError:
+                    pass
+
+            solution = torch.linalg.lstsq(weighted_design, weighted_targets).solution
+            return solution[: design.size(1)]
+
+        global_solution = _solve_weighted_linear(
+            torch.ones(local_inputs.size(0), device=design.device, dtype=design.dtype)
+        )
+
+        rule_biases = torch.empty_like(layer.rule_bias)
+        rule_weights = torch.empty_like(layer.rule_weights)
+        for rule_index in range(layer.n_rules):
+            sample_weights = normalized_rule_weights[:, rule_index]
+            effective_weight = float(sample_weights.sum().item())
+            if effective_weight < min_effective_weight:
+                solution = global_solution
+            else:
+                solution = _solve_weighted_linear(sample_weights)
+            rule_biases[rule_index] = solution[0]
+            rule_weights[rule_index] = solution[1:]
+
+        layer.rule_bias.copy_(rule_biases)
+        layer.rule_weights.copy_(rule_weights)
 
 
 def build_bootstrapped_hierarchical_model(
@@ -459,6 +535,8 @@ def build_stagewise_pretrained_hierarchical_model(
     config: HierarchicalModelConfig,
     sample_inputs: Tensor,
     sample_targets: Tensor,
+    validation_inputs: Tensor | None = None,
+    validation_targets: Tensor | None = None,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
     device: str | torch.device | None = None,
@@ -481,14 +559,38 @@ def build_stagewise_pretrained_hierarchical_model(
     )
     if target_matrix.size(0) != current_samples.size(0):
         raise ValueError("sample_inputs and sample_targets must contain the same number of samples.")
+    if (validation_inputs is None) != (validation_targets is None):
+        raise ValueError("validation_inputs and validation_targets must either both be provided or both be omitted.")
+
+    validation_samples: Tensor | None = None
+    validation_target_matrix: Tensor | None = None
+    if validation_inputs is not None and validation_targets is not None:
+        validation_samples = _to_feature_matrix(
+            validation_inputs,
+            config.input_dim,
+            name="validation_inputs",
+            device=current_samples.device,
+        )
+        validation_target_matrix = _to_target_matrix(
+            validation_targets,
+            config.decision_layer.output_dim,
+            name="validation_targets",
+            device=current_samples.device,
+        )
+        if validation_target_matrix.size(0) != validation_samples.size(0):
+            raise ValueError("validation_inputs and validation_targets must contain the same number of samples.")
 
     if pretrain.task_type == "binary_classification":
         clip = float(pretrain.classification_target_clip)
         if not 0.0 < clip < 0.5:
             raise ValueError("classification_target_clip must lie strictly between 0 and 0.5.")
         training_targets = target_matrix.clamp(clip, 1.0 - clip)
+        validation_training_targets = (
+            validation_target_matrix.clamp(clip, 1.0 - clip) if validation_target_matrix is not None else None
+        )
     elif pretrain.task_type == "regression":
         training_targets = target_matrix
+        validation_training_targets = validation_target_matrix
     else:
         raise ValueError(
             f"Unsupported task_type={pretrain.task_type!r}. Expected 'regression' or 'binary_classification'."
@@ -499,6 +601,8 @@ def build_stagewise_pretrained_hierarchical_model(
         current_samples,
         target_matrix,
         training_targets,
+        validation_samples,
+        validation_training_targets,
         bootstrap,
         pretrain,
         initial_reference_model=None,
@@ -510,13 +614,16 @@ def _build_stagewise_from_reference(
     current_samples: Tensor,
     target_matrix: Tensor,
     training_targets: Tensor,
+    validation_samples: Tensor | None,
+    validation_training_targets: Tensor | None,
     bootstrap: BootstrapConfig,
     pretrain: StagewisePretrainingConfig,
     *,
     initial_reference_model: DeepFuzzyFeatureModel | None,
 ) -> DeepFuzzyFeatureModel:
     best_model: DeepFuzzyFeatureModel | None = None
-    best_score = float("inf")
+    higher_is_better = _resolve_stage_selection_metric(pretrain) == "f1"
+    best_score = float("-inf") if higher_is_better else float("inf")
     reference_model: DeepFuzzyFeatureModel | None = initial_reference_model
 
     for _ in range(pretrain.refinement_rounds):
@@ -562,8 +669,16 @@ def _build_stagewise_from_reference(
         candidate_model = DeepFuzzyFeatureModel(stages=stages, decision_layer=decision_layer, input_dim=config.input_dim)
 
         with torch.no_grad():
-            candidate_score = float(_task_loss_from_predictions(pretrain.task_type, candidate_model(current_samples), training_targets).item())
-        if candidate_score < best_score:
+            if validation_samples is not None and validation_training_targets is not None:
+                score_predictions = candidate_model(validation_samples)
+                score_targets = validation_training_targets
+            else:
+                score_predictions = candidate_model(current_samples)
+                score_targets = training_targets
+            candidate_score, _ = _candidate_selection_score(pretrain, score_predictions, score_targets)
+
+        improved = candidate_score > best_score if higher_is_better else candidate_score < best_score
+        if improved:
             best_score = candidate_score
             best_model = copy.deepcopy(candidate_model)
         reference_model = candidate_model
@@ -578,6 +693,8 @@ def reestimate_hierarchical_model_rule_base(
     reference_model: DeepFuzzyFeatureModel,
     sample_inputs: Tensor,
     sample_targets: Tensor,
+    validation_inputs: Tensor | None = None,
+    validation_targets: Tensor | None = None,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
     device: str | torch.device | None = None,
@@ -603,14 +720,38 @@ def reestimate_hierarchical_model_rule_base(
     )
     if target_matrix.size(0) != current_samples.size(0):
         raise ValueError("sample_inputs and sample_targets must contain the same number of samples.")
+    if (validation_inputs is None) != (validation_targets is None):
+        raise ValueError("validation_inputs and validation_targets must either both be provided or both be omitted.")
+
+    validation_samples: Tensor | None = None
+    validation_target_matrix: Tensor | None = None
+    if validation_inputs is not None and validation_targets is not None:
+        validation_samples = _to_feature_matrix(
+            validation_inputs,
+            config.input_dim,
+            name="validation_inputs",
+            device=current_samples.device,
+        )
+        validation_target_matrix = _to_target_matrix(
+            validation_targets,
+            config.decision_layer.output_dim,
+            name="validation_targets",
+            device=current_samples.device,
+        )
+        if validation_target_matrix.size(0) != validation_samples.size(0):
+            raise ValueError("validation_inputs and validation_targets must contain the same number of samples.")
 
     if pretrain.task_type == "binary_classification":
         clip = float(pretrain.classification_target_clip)
         if not 0.0 < clip < 0.5:
             raise ValueError("classification_target_clip must lie strictly between 0 and 0.5.")
         training_targets = target_matrix.clamp(clip, 1.0 - clip)
+        validation_training_targets = (
+            validation_target_matrix.clamp(clip, 1.0 - clip) if validation_target_matrix is not None else None
+        )
     elif pretrain.task_type == "regression":
         training_targets = target_matrix
+        validation_training_targets = validation_target_matrix
     else:
         raise ValueError(
             f"Unsupported task_type={pretrain.task_type!r}. Expected 'regression' or 'binary_classification'."
@@ -621,6 +762,8 @@ def reestimate_hierarchical_model_rule_base(
         current_samples,
         target_matrix,
         training_targets,
+        validation_samples,
+        validation_training_targets,
         bootstrap,
         pretrain,
         initial_reference_model=reference_model,
@@ -647,6 +790,8 @@ def build_stagewise_pretrained_shallow_model(
     config: ShallowFuzzyModelConfig,
     sample_inputs: Tensor,
     sample_targets: Tensor,
+    validation_inputs: Tensor | None = None,
+    validation_targets: Tensor | None = None,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
     device: str | torch.device | None = None,
@@ -655,6 +800,8 @@ def build_stagewise_pretrained_shallow_model(
         config.as_hierarchical_config(),
         sample_inputs=sample_inputs,
         sample_targets=sample_targets,
+        validation_inputs=validation_inputs,
+        validation_targets=validation_targets,
         bootstrap_config=bootstrap_config,
         pretraining_config=pretraining_config,
         device=device,
@@ -666,6 +813,8 @@ def reestimate_shallow_model_rule_base(
     reference_model: DeepFuzzyFeatureModel,
     sample_inputs: Tensor,
     sample_targets: Tensor,
+    validation_inputs: Tensor | None = None,
+    validation_targets: Tensor | None = None,
     bootstrap_config: BootstrapConfig | None = None,
     pretraining_config: StagewisePretrainingConfig | None = None,
     device: str | torch.device | None = None,
@@ -675,6 +824,8 @@ def reestimate_shallow_model_rule_base(
         reference_model=reference_model,
         sample_inputs=sample_inputs,
         sample_targets=sample_targets,
+        validation_inputs=validation_inputs,
+        validation_targets=validation_targets,
         bootstrap_config=bootstrap_config,
         pretraining_config=pretraining_config,
         device=device,
