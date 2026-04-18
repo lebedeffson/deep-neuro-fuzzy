@@ -33,6 +33,10 @@ class TrainingConfig:
     shuffle: bool = True
     device: str | None = None
     classification_threshold: float = 0.5
+    binary_auto_pos_weight: bool = False
+    binary_pos_weight: float | None = None
+    regression_loss: str = "mse"  # "mse" | "huber"
+    huber_delta: float = 1.0
     monitor_metric: str | None = None
     monitor_mode: str | None = None  # "min" | "max"; defaults to "min" when metric is not set
     rule_sparsity_weight: float = 0.0
@@ -166,6 +170,28 @@ class FuzzyTrainer:
             validation_inputs = validation_inputs.to(device=device, dtype=torch.float32)
             validation_targets = validation_targets.to(device=device, dtype=torch.float32)
 
+        if self.config.task_type == "binary_classification":
+            effective_pos_weight: float | None = None
+            if self.config.binary_auto_pos_weight:
+                flat_targets = train_targets.reshape(-1)
+                positive_count = float(flat_targets.sum().item())
+                total_count = float(flat_targets.numel())
+                negative_count = total_count - positive_count
+                if positive_count > 0.0 and negative_count > 0.0:
+                    effective_pos_weight = negative_count / positive_count
+            elif self.config.binary_pos_weight is not None:
+                effective_pos_weight = float(self.config.binary_pos_weight)
+
+            if effective_pos_weight is not None and effective_pos_weight > 0.0:
+                pos_weight_tensor = torch.tensor(
+                    [effective_pos_weight],
+                    device=device,
+                    dtype=train_targets.dtype,
+                )
+                self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+            else:
+                self.loss_fn = nn.BCEWithLogitsLoss()
+
         optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=self.config.learning_rate,
@@ -283,7 +309,13 @@ class FuzzyTrainer:
 
     def _default_loss(self, task_type: TaskType) -> nn.Module:
         if task_type == "regression":
-            return nn.MSELoss()
+            if self.config.regression_loss == "mse":
+                return nn.MSELoss()
+            if self.config.regression_loss == "huber":
+                return nn.HuberLoss(delta=self.config.huber_delta)
+            raise ValueError(
+                f"Unsupported regression_loss={self.config.regression_loss!r}. Expected 'mse' or 'huber'."
+            )
         if task_type == "binary_classification":
             return nn.BCEWithLogitsLoss()
         raise ValueError(f"Unsupported task type: {task_type}.")
