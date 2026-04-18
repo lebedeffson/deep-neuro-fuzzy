@@ -273,6 +273,22 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         learning_rate_scale_classification=0.9,
         refinement_cycle_floor=2,
     ),
+    "quality_tiny_reg": DfflProfile(
+        name="quality_tiny_reg",
+        local_concepts=3,
+        local_max_rules=10,
+        aggregate_max_rules=16,
+        decision_max_rules=12,
+        stage2_width_min=4,
+        stage2_width_max=8,
+        local_rule_generation_mode="prototype",
+        aggregate_rule_generation_mode="prototype",
+        decision_rule_generation_mode="prototype",
+        # Keep architecture compact, but raise effective LR for tiny regression tasks.
+        learning_rate_scale_regression=1.3333333333333333,
+        learning_rate_scale_classification=0.9,
+        refinement_cycle_floor=2,
+    ),
     "quality_large_cls": DfflProfile(
         name="quality_large_cls",
         local_concepts=2,
@@ -310,12 +326,20 @@ def resolve_dffl_profile(
             and input_dim >= 50
         ):
             return DFFL_PROFILES["quality_large_cls"]
+        # Medium-size, high-dimensional binary tasks also benefit from the tighter large-cls profile.
+        if (
+            task_type == "binary_classification"
+            and input_dim is not None
+            and n_samples >= 400
+            and input_dim >= 25
+        ):
+            return DFFL_PROFILES["quality_large_cls"]
         # Very small binary datasets are better served by a more stable balanced profile.
         if task_type == "binary_classification" and n_samples <= 250:
             return DFFL_PROFILES["quality_balanced"]
         # Tiny regression datasets are highly sensitive to over-parameterized DFFL variants.
         if task_type == "regression" and n_samples <= 50:
-            return DFFL_PROFILES["quality_balanced"]
+            return DFFL_PROFILES["quality_tiny_reg"]
         if task_type == "binary_classification" and n_samples >= 500:
             return DFFL_PROFILES["quality"]
         return DFFL_PROFILES["quality"]
