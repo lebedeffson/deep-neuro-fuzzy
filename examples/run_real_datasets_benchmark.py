@@ -304,6 +304,21 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         learning_rate_scale_classification=0.8,
         refinement_cycle_floor=2,
     ),
+    "quality_large_cls_plus": DfflProfile(
+        name="quality_large_cls_plus",
+        local_concepts=2,
+        local_max_rules=8,
+        aggregate_max_rules=18,
+        decision_max_rules=12,
+        stage2_width_min=4,
+        stage2_width_max=7,
+        local_rule_generation_mode="enumerate",
+        aggregate_rule_generation_mode="prototype",
+        decision_rule_generation_mode="prototype",
+        learning_rate_scale_regression=1.0,
+        learning_rate_scale_classification=0.9,
+        refinement_cycle_floor=2,
+    ),
 }
 
 
@@ -315,9 +330,9 @@ def resolve_dffl_profile(
     input_dim: int | None = None,
 ) -> DfflProfile:
     if profile_name == "quality_auto":
-        # Large binary datasets benefit from a tighter, less explosive rule budget.
+        # Large binary datasets need slightly larger rule budgets than compact large-cls.
         if task_type == "binary_classification" and n_samples >= 8_000:
-            return DFFL_PROFILES["quality_large_cls"]
+            return DFFL_PROFILES["quality_large_cls_plus"]
         # High-dimensional medium-large binary datasets (e.g., digits-like) also need tighter budgets.
         if (
             task_type == "binary_classification"
