@@ -296,11 +296,26 @@ def resolve_dffl_profile(
     profile_name: str,
     task_type: TaskType,
     n_samples: int,
+    input_dim: int | None = None,
 ) -> DfflProfile:
     if profile_name == "quality_auto":
         # Large binary datasets benefit from a tighter, less explosive rule budget.
         if task_type == "binary_classification" and n_samples >= 8_000:
             return DFFL_PROFILES["quality_large_cls"]
+        # High-dimensional medium-large binary datasets (e.g., digits-like) also need tighter budgets.
+        if (
+            task_type == "binary_classification"
+            and input_dim is not None
+            and n_samples >= 1_500
+            and input_dim >= 50
+        ):
+            return DFFL_PROFILES["quality_large_cls"]
+        # Very small binary datasets are better served by a more stable balanced profile.
+        if task_type == "binary_classification" and n_samples <= 250:
+            return DFFL_PROFILES["quality_balanced"]
+        # Tiny regression datasets are highly sensitive to over-parameterized DFFL variants.
+        if task_type == "regression" and n_samples <= 50:
+            return DFFL_PROFILES["quality_balanced"]
         if task_type == "binary_classification" and n_samples >= 500:
             return DFFL_PROFILES["quality"]
         return DFFL_PROFILES["quality"]
@@ -674,6 +689,7 @@ def run_single_seed_dataset_benchmark(
         profile_name=dffl_profile_name,
         task_type=spec.task_type,
         n_samples=split.n_samples,
+        input_dim=split.input_dim,
     )
     progress_log(
         f"seed={seed} profile: dffl={dffl_profile.name}, task={spec.task_type}, device={device or 'default'}"
@@ -1165,6 +1181,7 @@ def main() -> None:
             profile_name=args.dffl_profile,
             task_type=spec.task_type,
             n_samples=int(dataset_features.shape[0]),
+            input_dim=int(dataset_features.shape[1]),
         )
         per_seed_results = []
         total_seeds = len(seeds)
