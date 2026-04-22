@@ -6,7 +6,7 @@ import json
 import sys
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -134,7 +134,14 @@ class DfflProfile:
     bridge_enabled: bool = False
     bridge_top_pairs: int = 0
     bridge_pair_score_alpha: float = 0.5
+    bridge_score_interaction_weight: float = 0.25
+    bridge_score_stability_weight: float = 0.15
+    bridge_max_pairs_per_feature: int = 2
+    bridge_max_pairs_per_group_pair: int = 1
     bridge_concepts: int = 1
+    bridge_concepts_max: int = 2
+    bridge_concepts_adaptive: bool = True
+    bridge_concepts_high_share_threshold: float = 0.82
     bridge_max_rules: int = 6
     bridge_max_rule_arity: int = 2
     bridge_rule_generation_mode: str = "prototype"
@@ -142,6 +149,18 @@ class DfflProfile:
     bridge_prototype_scoring_mode: str = "max"
     bridge_prototype_variable_pool_size: int | None = None
     bridge_prototype_sample_size: int | None = 256
+    bridge_token_enabled: bool = True
+    bridge_token_concepts: int = 1
+    bridge_token_max_rules: int = 3
+    bridge_token_max_rule_arity: int = 2
+    stagewise_rule_swap_ratio: float = 0.0
+    stagewise_rule_swap_min_keep: int = 0
+    stage1_fixed_rule_budget: bool = True
+    stage1_min_rules_per_block: int = 6
+    total_rule_budget: int = 0
+    block_agreement_weight: float = 0.0
+    block_agreement_target_corr: float = 0.2
+    block_agreement_stage_limit: int = 1
 
 
 def set_seed(seed: int) -> None:
@@ -196,6 +215,19 @@ def parse_fuzzy_model_names(raw: str) -> tuple[str, ...]:
         if model_name not in resolved:
             resolved.append(model_name)
     return tuple(resolved)
+
+
+def _apply_gpu_only_mode(args: argparse.Namespace) -> None:
+    if not bool(args.gpu_only):
+        return
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "--gpu-only requires CUDA, but torch.cuda.is_available() is False. "
+            "Use CUDA environment or run without --gpu-only."
+        )
+    # Enforce GPU fuzzy pipeline and disable CPU-only sklearn baselines.
+    args.device = "cuda"
+    args.skip_sklearn = True
 
 
 def var3(name: str) -> FuzzyVariable:
@@ -310,6 +342,9 @@ PRIMARY_METRIC: dict[TaskType, str] = {
     "binary_classification": "f1",
 }
 
+FEATURE_GEOMETRIES: tuple[str, ...] = ("euclidean", "hyperbolic", "auto")
+BINARY_HEAVY_GROUPING_MODES: tuple[str, ...] = ("binary_aware", "contiguous")
+
 FUZZY_MODEL_NAMES: tuple[str, ...] = (
     "ruanfis_shallow",
     "ruanfis_stacked_anfis",
@@ -367,6 +402,11 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         bridge_concepts=1,
         bridge_max_rules=6,
         bridge_prototype_term_limit=2,
+        stagewise_rule_swap_ratio=0.25,
+        stagewise_rule_swap_min_keep=6,
+        block_agreement_weight=1e-3,
+        block_agreement_target_corr=0.2,
+        block_agreement_stage_limit=1,
     ),
     "quality_balanced": DfflProfile(
         name="quality_balanced",
@@ -384,6 +424,11 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
         local_prototype_term_limit=3,
+        stagewise_rule_swap_ratio=0.2,
+        stagewise_rule_swap_min_keep=6,
+        block_agreement_weight=8e-4,
+        block_agreement_target_corr=0.18,
+        block_agreement_stage_limit=1,
     ),
     "quality_tiny_reg": DfflProfile(
         name="quality_tiny_reg",
@@ -406,6 +451,11 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         bridge_top_pairs=2,
         bridge_concepts=1,
         bridge_max_rules=4,
+        stagewise_rule_swap_ratio=0.15,
+        stagewise_rule_swap_min_keep=4,
+        block_agreement_weight=8e-4,
+        block_agreement_target_corr=0.18,
+        block_agreement_stage_limit=1,
     ),
     "quality_large_cls": DfflProfile(
         name="quality_large_cls",
@@ -463,6 +513,11 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         bridge_prototype_term_limit=2,
         bridge_prototype_scoring_mode="hybrid",
         bridge_prototype_sample_size=1024,
+        stagewise_rule_swap_ratio=0.3,
+        stagewise_rule_swap_min_keep=8,
+        block_agreement_weight=1.5e-3,
+        block_agreement_target_corr=0.22,
+        block_agreement_stage_limit=1,
     ),
     "quality_large_cls_plus": DfflProfile(
         name="quality_large_cls_plus",
@@ -523,6 +578,11 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         bridge_prototype_term_limit=2,
         bridge_prototype_scoring_mode="hybrid",
         bridge_prototype_sample_size=1024,
+        stagewise_rule_swap_ratio=0.35,
+        stagewise_rule_swap_min_keep=10,
+        block_agreement_weight=1.5e-3,
+        block_agreement_target_corr=0.22,
+        block_agreement_stage_limit=1,
     ),
 }
 
@@ -560,6 +620,41 @@ def resolve_dffl_profile(
     return DFFL_PROFILES[profile_name]
 
 
+def apply_dffl_profile_overrides(
+    profile: DfflProfile,
+    *,
+    rule_swap_ratio: float | None = None,
+    rule_swap_min_keep: int | None = None,
+    total_rule_budget: int | None = None,
+    bridge_score_interaction_weight: float | None = None,
+    bridge_score_stability_weight: float | None = None,
+) -> DfflProfile:
+    updates: dict[str, object] = {}
+    if rule_swap_ratio is not None:
+        if not 0.0 <= float(rule_swap_ratio) <= 1.0:
+            raise ValueError("dffl_rule_swap_ratio must be in [0, 1].")
+        updates["stagewise_rule_swap_ratio"] = float(rule_swap_ratio)
+    if rule_swap_min_keep is not None:
+        if int(rule_swap_min_keep) < 0:
+            raise ValueError("dffl_rule_swap_min_keep must be non-negative.")
+        updates["stagewise_rule_swap_min_keep"] = int(rule_swap_min_keep)
+    if total_rule_budget is not None:
+        if int(total_rule_budget) < 0:
+            raise ValueError("dffl_total_rule_budget must be non-negative.")
+        updates["total_rule_budget"] = int(total_rule_budget)
+    if bridge_score_interaction_weight is not None:
+        if float(bridge_score_interaction_weight) < 0.0:
+            raise ValueError("dffl_bridge_score_interaction_weight must be non-negative.")
+        updates["bridge_score_interaction_weight"] = float(bridge_score_interaction_weight)
+    if bridge_score_stability_weight is not None:
+        if float(bridge_score_stability_weight) < 0.0:
+            raise ValueError("dffl_bridge_score_stability_weight must be non-negative.")
+        updates["bridge_score_stability_weight"] = float(bridge_score_stability_weight)
+    if not updates:
+        return profile
+    return replace(profile, **updates)
+
+
 def _make_groups(total_dim: int, group_size: int) -> tuple[tuple[int, ...], ...]:
     groups: list[tuple[int, ...]] = []
     for start in range(0, total_dim, group_size):
@@ -568,37 +663,111 @@ def _make_groups(total_dim: int, group_size: int) -> tuple[tuple[int, ...], ...]
 
 
 def _feature_target_relevance(inputs: torch.Tensor, targets: torch.Tensor) -> np.ndarray:
-    features = inputs.detach().cpu().numpy().astype(np.float64, copy=False)
-    labels = targets.detach().cpu().numpy().reshape(-1).astype(np.float64, copy=False)
+    features = inputs.detach().to(dtype=torch.float32)
+    labels = targets.detach().reshape(-1).to(device=features.device, dtype=torch.float32)
     if features.ndim != 2:
         raise ValueError(f"Expected 2D features, got {features.ndim}D.")
     if labels.ndim != 1:
         raise ValueError(f"Expected 1D targets, got {labels.ndim}D.")
-    if features.shape[0] != labels.shape[0]:
+    if features.size(0) != labels.size(0):
         raise ValueError("Features and targets must have the same number of samples.")
 
-    centered_x = features - features.mean(axis=0, keepdims=True)
+    centered_x = features - features.mean(dim=0, keepdim=True)
     centered_y = labels - labels.mean()
-    denom_y = np.sqrt(np.sum(centered_y * centered_y))
-    denom_x = np.sqrt(np.sum(centered_x * centered_x, axis=0))
+    denom_y = torch.linalg.vector_norm(centered_y).clamp_min(1e-12)
+    denom_x = torch.linalg.vector_norm(centered_x, dim=0)
     denominator = denom_x * denom_y
-    numerator = np.abs(centered_x.T @ centered_y)
-    relevance = np.zeros(features.shape[1], dtype=np.float64)
-    np.divide(numerator, denominator, out=relevance, where=denominator > 1e-12)
-    return np.clip(relevance, 0.0, 1.0)
+    numerator = torch.abs(centered_x.transpose(0, 1) @ centered_y)
+    relevance = torch.where(denominator > 1e-12, numerator / denominator, torch.zeros_like(numerator))
+    relevance = relevance.clamp(0.0, 1.0)
+    return relevance.detach().cpu().numpy().astype(np.float64, copy=False)
 
 
 def _feature_feature_correlation(inputs: torch.Tensor) -> np.ndarray:
-    features = inputs.detach().cpu().numpy().astype(np.float64, copy=False)
-    centered = features - features.mean(axis=0, keepdims=True)
-    gram = centered.T @ centered
-    norms = np.sqrt(np.clip(np.diag(gram), a_min=0.0, a_max=None))
-    denominator = np.outer(norms, norms)
-    corr = np.zeros_like(gram)
-    np.divide(gram, denominator, out=corr, where=denominator > 1e-12)
-    corr = np.abs(corr)
-    np.fill_diagonal(corr, 1.0)
-    return np.clip(corr, 0.0, 1.0)
+    features = inputs.detach().to(dtype=torch.float32)
+    centered = features - features.mean(dim=0, keepdim=True)
+    gram = centered.transpose(0, 1) @ centered
+    norms = torch.sqrt(torch.clamp(torch.diag(gram), min=0.0))
+    denominator = norms[:, None] * norms[None, :]
+    corr = torch.where(denominator > 1e-12, gram / denominator, torch.zeros_like(gram))
+    corr = torch.abs(corr)
+    corr.fill_diagonal_(1.0)
+    corr = corr.clamp(0.0, 1.0)
+    return corr.detach().cpu().numpy().astype(np.float64, copy=False)
+
+
+def _validate_feature_geometry(feature_geometry: str) -> str:
+    normalized = str(feature_geometry).strip().lower()
+    if normalized not in FEATURE_GEOMETRIES:
+        raise ValueError(
+            f"Unsupported feature_geometry={feature_geometry!r}. "
+            f"Expected one of: {', '.join(FEATURE_GEOMETRIES)}."
+        )
+    return normalized
+
+
+def _validate_binary_heavy_grouping_mode(mode: str) -> str:
+    normalized = str(mode).strip().lower()
+    if normalized not in BINARY_HEAVY_GROUPING_MODES:
+        raise ValueError(
+            f"Unsupported binary_heavy_grouping_mode={mode!r}. "
+            f"Expected one of: {', '.join(BINARY_HEAVY_GROUPING_MODES)}."
+        )
+    return normalized
+
+
+def _binary_feature_ratio(inputs: torch.Tensor) -> float:
+    if inputs.ndim != 2 or int(inputs.shape[1]) <= 0:
+        return 0.0
+    return float(len(_detect_binary_feature_indices(inputs)) / float(inputs.shape[1]))
+
+
+def _feature_poincare_embedding(inputs: torch.Tensor) -> np.ndarray:
+    features = inputs.detach().to(dtype=torch.float32)
+    if features.ndim != 2:
+        raise ValueError(f"Expected 2D inputs for hyperbolic embedding, got shape {tuple(features.shape)}.")
+    if int(features.shape[1]) < 2:
+        return np.zeros((int(features.shape[1]), 2), dtype=np.float64)
+
+    # Feature points: each original feature is represented by its values across samples.
+    # Shape: [n_features, n_samples]
+    points = features.transpose(0, 1)
+    points = points - points.mean(dim=1, keepdim=True)
+    norms = torch.linalg.vector_norm(points, dim=1, keepdim=True).clamp_min(1e-12)
+    points = points / norms
+
+    # Deterministic PCA-like projection to 2D.
+    u, s, _ = torch.linalg.svd(points, full_matrices=False)
+    embedding = u[:, :2] * s[:2].unsqueeze(0)
+    if int(embedding.shape[1]) < 2:
+        embedding = torch.nn.functional.pad(embedding, (0, 2 - int(embedding.shape[1]), 0, 0))
+
+    # Map to Poincare ball with norm strictly below 1.
+    radii = torch.linalg.vector_norm(embedding, dim=1, keepdim=True)
+    scale = torch.quantile(radii.reshape(-1), 0.90).clamp_min(1e-12)
+    normalized_radii = torch.tanh(radii / scale) * 0.95
+    direction = embedding / radii.clamp_min(1e-12)
+    mapped = normalized_radii * direction
+    return mapped.detach().cpu().numpy().astype(np.float64, copy=False)
+
+
+def _pairwise_poincare_distance(points: np.ndarray) -> np.ndarray:
+    if points.ndim != 2:
+        raise ValueError(f"Expected point matrix [n, dim], got shape {points.shape}.")
+    n = int(points.shape[0])
+    if n <= 0:
+        return np.zeros((0, 0), dtype=np.float64)
+
+    squared_norms = np.sum(points * points, axis=1)
+    left = points[:, None, :]
+    right = points[None, :, :]
+    squared_diff = np.sum((left - right) ** 2, axis=2)
+    denom = (1.0 - squared_norms[:, None]) * (1.0 - squared_norms[None, :])
+    argument = 1.0 + (2.0 * squared_diff / np.maximum(denom, 1e-12))
+    argument = np.maximum(argument, 1.0 + 1e-12)
+    distances = np.arccosh(argument)
+    np.fill_diagonal(distances, 0.0)
+    return distances
 
 
 def _detect_binary_feature_indices(inputs: torch.Tensor, eps: float = 1e-6) -> tuple[int, ...]:
@@ -656,20 +825,215 @@ def _make_target_corr_groups(
     return tuple(groups)
 
 
+def _make_binary_aware_target_corr_groups(
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    group_size: int,
+    correlation_weight: float,
+) -> tuple[tuple[int, ...], ...]:
+    if group_size <= 0:
+        raise ValueError("group_size must be positive.")
+    input_dim = int(inputs.shape[1])
+    if input_dim <= group_size or inputs.shape[0] < 4:
+        return _make_groups(input_dim, group_size=group_size)
+
+    corr_weight = min(1.0, max(0.0, float(correlation_weight)))
+    relevance = _feature_target_relevance(inputs, targets)
+    pairwise_corr = _feature_feature_correlation(inputs)
+
+    binary_set = set(_detect_binary_feature_indices(inputs))
+    non_binary = [idx for idx in range(input_dim) if idx not in binary_set]
+    if len(non_binary) < 2:
+        return _make_target_corr_groups(
+            inputs,
+            targets,
+            group_size=group_size,
+            correlation_weight=correlation_weight,
+        )
+
+    n_groups = int(np.ceil(input_dim / float(group_size)))
+    non_binary_priority = sorted(non_binary, key=lambda idx: (-relevance[idx], idx))
+    anchors = non_binary_priority[: max(1, min(n_groups, len(non_binary_priority)))]
+    groups: list[list[int]] = [[int(anchor)] for anchor in anchors]
+    assigned = set(anchors)
+
+    # Ensure deterministic group count even when non-binary anchors are fewer than n_groups.
+    while len(groups) < n_groups:
+        groups.append([])
+
+    all_priority = sorted(range(input_dim), key=lambda idx: (-relevance[idx], idx))
+    for candidate in all_priority:
+        if candidate in assigned:
+            continue
+        best_group = None
+        best_score = float("-inf")
+        candidate_is_binary = candidate in binary_set
+        for group_index, group in enumerate(groups):
+            if len(group) >= group_size:
+                continue
+            if not group:
+                score = float(relevance[candidate]) + 0.02
+            else:
+                cohesion = float(np.mean(pairwise_corr[candidate, group]))
+                score = corr_weight * cohesion + (1.0 - corr_weight) * float(relevance[candidate])
+                group_binary_count = sum(1 for idx in group if idx in binary_set)
+                group_non_binary_count = len(group) - group_binary_count
+                # Prefer mixed groups to preserve cross-type interactions in binary-heavy settings.
+                if candidate_is_binary and group_non_binary_count > 0:
+                    score += 0.03
+                if (not candidate_is_binary) and group_binary_count > 0:
+                    score += 0.03
+                if candidate_is_binary and group_binary_count == len(group):
+                    score -= 0.02
+
+            if score > best_score + 1e-12:
+                best_score = score
+                best_group = group_index
+                continue
+            if (
+                abs(score - best_score) <= 1e-12
+                and best_group is not None
+                and len(groups[group_index]) < len(groups[best_group])
+            ):
+                best_group = group_index
+
+        if best_group is None:
+            for group_index, group in enumerate(groups):
+                if len(group) < group_size:
+                    best_group = group_index
+                    break
+        if best_group is None:
+            best_group = 0
+        groups[best_group].append(int(candidate))
+        assigned.add(int(candidate))
+
+    # Flatten and restore deterministic sorted tuples.
+    normalized = [tuple(sorted(group)) for group in groups if group]
+    covered = set(idx for group in normalized for idx in group)
+    if covered != set(range(input_dim)):
+        missing = sorted(set(range(input_dim)) - covered)
+        for idx in missing:
+            normalized.append((int(idx),))
+    return tuple(normalized)
+
+
+def _make_hyperbolic_graph_groups(
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    group_size: int,
+) -> tuple[tuple[int, ...], ...]:
+    if group_size <= 0:
+        raise ValueError("group_size must be positive.")
+    input_dim = int(inputs.shape[1])
+    if input_dim <= group_size:
+        return _make_groups(input_dim, group_size=group_size)
+
+    relevance = _feature_target_relevance(inputs, targets)
+    pairwise_corr = _feature_feature_correlation(inputs)
+    points = _feature_poincare_embedding(inputs)
+    distances = _pairwise_poincare_distance(points)
+    max_distance = float(np.max(distances)) + 1e-12
+    proximity = 1.0 - (distances / max_distance)
+    np.fill_diagonal(proximity, 1.0)
+
+    remaining = set(range(input_dim))
+    priority = np.argsort(-relevance, kind="stable").tolist()
+    groups: list[tuple[int, ...]] = []
+
+    while remaining:
+        seed = next((idx for idx in priority if idx in remaining), min(remaining))
+        current_group = [int(seed)]
+        remaining.remove(seed)
+
+        while len(current_group) < group_size and remaining:
+            best_candidate = None
+            best_score = float("-inf")
+            for candidate in remaining:
+                hyp_cohesion = float(np.mean(proximity[candidate, current_group]))
+                corr_cohesion = float(np.mean(pairwise_corr[candidate, current_group]))
+                cohesion = 0.55 * hyp_cohesion + 0.45 * corr_cohesion
+                score = 0.7 * cohesion + 0.3 * float(relevance[candidate])
+                if score > best_score + 1e-12:
+                    best_score = score
+                    best_candidate = int(candidate)
+                    continue
+                if abs(score - best_score) <= 1e-12 and best_candidate is not None and candidate < best_candidate:
+                    best_candidate = int(candidate)
+            if best_candidate is None:
+                break
+            current_group.append(best_candidate)
+            remaining.remove(best_candidate)
+
+        groups.append(tuple(current_group))
+    return tuple(groups)
+
+
+def _resolve_effective_feature_geometry(
+    *,
+    requested_geometry: str,
+    profile: DfflProfile,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+) -> tuple[str, str]:
+    requested = _validate_feature_geometry(requested_geometry)
+    if requested in {"euclidean", "hyperbolic"}:
+        return requested, "explicit"
+
+    input_dim = int(train_inputs.shape[1])
+    n_samples = int(train_inputs.shape[0])
+    binary_ratio = _binary_feature_ratio(train_inputs)
+    eu_groups = make_dffl_input_groups(
+        profile,
+        train_inputs=train_inputs,
+        train_targets=train_targets,
+        feature_geometry="euclidean",
+    )
+    intergroup_share = estimate_intergroup_interaction_share(
+        train_inputs=train_inputs,
+        train_targets=train_targets,
+        input_groups=eu_groups,
+    )
+
+    # Conservative policy: hyperbolic only for large, richly inter-group, non-binary-dominant settings.
+    if input_dim >= 80 and n_samples >= 4000 and intergroup_share >= 0.80 and binary_ratio <= 0.45:
+        return "hyperbolic", "auto_large_rich_intergroup"
+    return "euclidean", "auto_default"
+
+
 def make_dffl_input_groups(
     profile: DfflProfile,
     *,
     train_inputs: torch.Tensor,
     train_targets: torch.Tensor,
+    feature_geometry: str = "euclidean",
+    binary_heavy_grouping_mode: str = "binary_aware",
 ) -> tuple[tuple[int, ...], ...]:
+    geometry = _validate_feature_geometry(feature_geometry)
+    binary_mode = _validate_binary_heavy_grouping_mode(binary_heavy_grouping_mode)
+    if geometry == "hyperbolic":
+        return _make_hyperbolic_graph_groups(
+            train_inputs,
+            train_targets,
+            group_size=profile.input_group_size,
+        )
     if profile.input_group_strategy == "contiguous":
         return _make_groups(int(train_inputs.shape[1]), group_size=profile.input_group_size)
     if profile.input_group_strategy == "target_corr":
         binary_indices = _detect_binary_feature_indices(train_inputs)
         binary_ratio = len(binary_indices) / float(train_inputs.shape[1])
-        # For binary-heavy datasets (e.g., one-hot dominant), plain contiguous grouping is more stable.
+        # For binary-heavy datasets (e.g., one-hot dominant), use binary-aware grouping
+        # to preserve informative cross-type interactions without exploding complexity.
         if binary_ratio >= 0.6:
-            return _make_groups(int(train_inputs.shape[1]), group_size=profile.input_group_size)
+            if binary_mode == "contiguous":
+                return _make_groups(int(train_inputs.shape[1]), group_size=profile.input_group_size)
+            return _make_binary_aware_target_corr_groups(
+                train_inputs,
+                train_targets,
+                group_size=profile.input_group_size,
+                correlation_weight=profile.input_group_correlation_weight,
+            )
         return _make_target_corr_groups(
             train_inputs,
             train_targets,
@@ -682,27 +1046,347 @@ def make_dffl_input_groups(
     )
 
 
+def _build_feature_to_group_index(
+    input_dim: int,
+    input_groups: tuple[tuple[int, ...], ...],
+) -> np.ndarray:
+    feature_to_group = np.full(input_dim, fill_value=-1, dtype=np.int64)
+    for group_index, group in enumerate(input_groups):
+        for feature_index in group:
+            feature_to_group[int(feature_index)] = group_index
+    return feature_to_group
+
+
+def estimate_intergroup_interaction_share(
+    *,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    input_groups: tuple[tuple[int, ...], ...],
+) -> float:
+    input_dim = int(train_inputs.shape[1])
+    if input_dim <= 1 or train_inputs.shape[0] < 8:
+        return 0.0
+
+    feature_to_group = _build_feature_to_group_index(input_dim, input_groups)
+    pair_strength = _pair_interaction_relevance(train_inputs, train_targets).astype(np.float64, copy=False)
+    upper_triangle = np.triu(np.ones((input_dim, input_dim), dtype=bool), k=1)
+    total_strength = float(np.sum(pair_strength[upper_triangle]))
+    if total_strength <= 1e-12:
+        return 0.0
+    left_groups = feature_to_group[:, None]
+    right_groups = feature_to_group[None, :]
+    intergroup_mask = (
+        upper_triangle
+        & (left_groups >= 0)
+        & (right_groups >= 0)
+        & (left_groups != right_groups)
+    )
+    intergroup_strength = float(np.sum(pair_strength[intergroup_mask]))
+    return float(intergroup_strength / (total_strength + 1e-12))
+
+
+def _pair_interaction_relevance(inputs: torch.Tensor, targets: torch.Tensor) -> np.ndarray:
+    x = inputs.detach().to(dtype=torch.float32)
+    y = targets.detach().reshape(-1).to(device=x.device, dtype=torch.float32)
+    input_dim = int(x.shape[1])
+    if input_dim <= 1 or int(x.shape[0]) < 8:
+        return np.zeros((input_dim, input_dim), dtype=np.float64)
+
+    x_centered = x - x.mean(dim=0, keepdim=True)
+    y_centered = y - y.mean()
+    y_norm = torch.linalg.vector_norm(y_centered).clamp_min(1e-12)
+
+    interactions = x_centered[:, :, None] * x_centered[:, None, :]
+    interactions_centered = interactions - interactions.mean(dim=0, keepdim=True)
+    numerator = torch.abs(torch.sum(interactions_centered * y_centered[:, None, None], dim=0))
+    interaction_norm = torch.linalg.vector_norm(interactions_centered, dim=0).clamp_min(1e-12)
+    scores = torch.where(interaction_norm > 1e-12, numerator / (interaction_norm * y_norm), torch.zeros_like(numerator))
+    scores.fill_diagonal_(0.0)
+    max_score = torch.max(scores)
+    if float(max_score.item()) > 1e-12:
+        scores = scores / max_score
+    scores = scores.clamp(0.0, 1.0)
+    return scores.detach().cpu().numpy().astype(np.float64, copy=False)
+
+
+def _feature_relevance_stability_proxy(inputs: torch.Tensor, targets: torch.Tensor) -> np.ndarray:
+    inputs_tensor = inputs.detach()
+    targets_tensor = targets.detach()
+    n_samples = int(inputs_tensor.shape[0])
+    input_dim = int(inputs_tensor.shape[1])
+    if n_samples < 12:
+        return np.ones(input_dim, dtype=np.float64)
+
+    first_idx = torch.arange(0, n_samples, 2, device=inputs_tensor.device)
+    second_idx = torch.arange(1, n_samples, 2, device=inputs_tensor.device)
+    if int(second_idx.numel()) == 0:
+        return np.ones(input_dim, dtype=np.float64)
+
+    rel_first = _feature_target_relevance(inputs_tensor[first_idx], targets_tensor[first_idx])
+    rel_second = _feature_target_relevance(inputs_tensor[second_idx], targets_tensor[second_idx])
+    stability = 1.0 - np.abs(rel_first - rel_second)
+    return np.clip(stability, 0.0, 1.0)
+
+
+def _resolve_dffl_effective_rule_budgets(
+    *,
+    profile: DfflProfile,
+    input_dim: int,
+    n_local_groups: int,
+    n_bridge_pairs: int,
+    intergroup_interaction_share: float,
+    adaptive_budget_enabled: bool = True,
+) -> dict[str, int | str]:
+    local_cap = int(profile.local_max_rules)
+    if n_local_groups > 4:
+        stage1_target_total_rules = min(160, max(96, 10 * n_local_groups))
+        if input_dim >= 40 and n_local_groups >= 12:
+            stage1_target_total_rules = min(stage1_target_total_rules, 128)
+        local_cap = min(local_cap, max(8, stage1_target_total_rules // n_local_groups))
+
+    bridge_cap = min(profile.bridge_max_rules, max(4, local_cap - 2))
+    if n_bridge_pairs <= 0:
+        bridge_cap = 0
+
+    decision_cap = int(profile.decision_max_rules)
+    if n_local_groups >= 12 and input_dim >= 40:
+        decision_cap = min(decision_cap, 12)
+
+    aggregate_cap_total = int(profile.aggregate_max_rules)
+    if profile.aggregate_global_context_dim > 0:
+        global_max_rules = (
+            int(profile.aggregate_global_max_rules)
+            if profile.aggregate_global_max_rules > 0
+            else max(4, min(profile.aggregate_max_rules // 2, 12))
+        )
+        aggregate_cap_total += int(global_max_rules)
+
+    local_cap_total = int(n_local_groups * local_cap)
+    bridge_cap_total = int(n_bridge_pairs * bridge_cap)
+    cap_total = int(local_cap_total + bridge_cap_total + aggregate_cap_total + decision_cap)
+    if cap_total <= 0:
+        return {
+            "allocation_policy": "zero_cap",
+            "local_max_rules_effective": 0,
+            "bridge_max_rules_effective": 0,
+            "aggregate_max_rules_effective": 0,
+            "decision_max_rules_effective": 0,
+            "local_total_budget_effective": 0,
+            "bridge_total_budget_effective": 0,
+            "aggregate_total_budget_effective": 0,
+            "decision_total_budget_effective": 0,
+            "total_rule_budget_effective": 0,
+        }
+
+    if int(profile.total_rule_budget) > 0:
+        budget_total = min(cap_total, int(profile.total_rule_budget))
+        allocation_policy = "explicit_total_rule_budget"
+    elif not adaptive_budget_enabled:
+        budget_total = cap_total
+        allocation_policy = "cap_only_no_allocator"
+    else:
+        base_budget = int(8 * n_local_groups + 24)
+        if input_dim >= 40:
+            base_budget += 12
+        if intergroup_interaction_share >= 0.65:
+            base_budget += 8
+        if n_bridge_pairs >= 6:
+            base_budget += 6
+        budget_total = min(cap_total, max(64, base_budget))
+        allocation_policy = "adaptive_capped_budget"
+
+    local_min_per_block = max(2, min(4, int(profile.stage1_min_rules_per_block)))
+    local_min_total = min(local_cap_total, n_local_groups * local_min_per_block)
+    bridge_min_total = min(bridge_cap_total, n_bridge_pairs * 2)
+    aggregate_min_total = min(aggregate_cap_total, 4 if aggregate_cap_total > 0 else 0)
+    decision_min_total = min(decision_cap, 4 if decision_cap > 0 else 0)
+
+    min_total = int(local_min_total + bridge_min_total + aggregate_min_total + decision_min_total)
+    if budget_total < min_total:
+        budget_total = min(cap_total, min_total)
+        allocation_policy = f"{allocation_policy}_raised_to_min"
+
+    share = float(np.clip(intergroup_interaction_share, 0.0, 1.0))
+    utilities = {
+        "local": 0.95 + 0.35 * (1.0 - share),
+        "bridge": (0.20 + 1.10 * share) if bridge_cap_total > 0 else 0.0,
+        "aggregate": 0.90 + 0.45 * share,
+        "decision": 0.80 + (0.15 if input_dim >= 20 else 0.0),
+    }
+    caps = {
+        "local": int(local_cap_total),
+        "bridge": int(bridge_cap_total),
+        "aggregate": int(aggregate_cap_total),
+        "decision": int(decision_cap),
+    }
+    budgets = {
+        "local": int(local_min_total),
+        "bridge": int(bridge_min_total),
+        "aggregate": int(aggregate_min_total),
+        "decision": int(decision_min_total),
+    }
+
+    remaining = int(budget_total - sum(budgets.values()))
+    while remaining > 0:
+        rooms = {name: caps[name] - budgets[name] for name in caps}
+        weighted_rooms = {
+            name: max(0.0, float(rooms[name])) * float(utilities[name])
+            for name in caps
+            if rooms[name] > 0
+        }
+        if not weighted_rooms:
+            break
+        target_name = max(weighted_rooms.items(), key=lambda item: (item[1], item[0]))[0]
+        budgets[target_name] += 1
+        remaining -= 1
+
+    local_max_rules_effective = max(local_min_per_block, int(budgets["local"] // max(1, n_local_groups)))
+    local_max_rules_effective = min(local_cap, local_max_rules_effective)
+    if n_bridge_pairs > 0 and bridge_cap > 0:
+        bridge_max_rules_effective = max(2, int(budgets["bridge"] // n_bridge_pairs))
+        bridge_max_rules_effective = min(bridge_cap, bridge_max_rules_effective)
+    else:
+        bridge_max_rules_effective = 0
+    aggregate_max_rules_effective = max(1, min(aggregate_cap_total, int(budgets["aggregate"])))
+    decision_max_rules_effective = max(1, min(decision_cap, int(budgets["decision"])))
+
+    total_effective = int(
+        local_max_rules_effective * n_local_groups
+        + bridge_max_rules_effective * n_bridge_pairs
+        + aggregate_max_rules_effective
+        + decision_max_rules_effective
+    )
+    return {
+        "allocation_policy": allocation_policy,
+        "local_max_rules_effective": int(local_max_rules_effective),
+        "bridge_max_rules_effective": int(bridge_max_rules_effective),
+        "aggregate_max_rules_effective": int(aggregate_max_rules_effective),
+        "decision_max_rules_effective": int(decision_max_rules_effective),
+        "local_total_budget_effective": int(local_max_rules_effective * n_local_groups),
+        "bridge_total_budget_effective": int(bridge_max_rules_effective * n_bridge_pairs),
+        "aggregate_total_budget_effective": int(aggregate_max_rules_effective),
+        "decision_total_budget_effective": int(decision_max_rules_effective),
+        "total_rule_budget_effective": int(total_effective),
+    }
+
+
+def _resolve_dffl_block_agreement_params(
+    *,
+    profile: DfflProfile,
+    intergroup_interaction_share: float,
+    n_bridge_pairs: int,
+) -> tuple[float, float]:
+    weight = float(profile.block_agreement_weight)
+    target_corr = float(profile.block_agreement_target_corr)
+    if weight <= 0.0:
+        return weight, target_corr
+
+    share = float(np.clip(intergroup_interaction_share, 0.0, 1.0))
+    if n_bridge_pairs > 0:
+        boost = 1.0 + 0.8 * max(0.0, share - 0.45)
+        weight *= boost
+        target_corr = min(0.35, target_corr + 0.08 * max(0.0, share - 0.50))
+    return float(weight), float(np.clip(target_corr, -1.0, 1.0))
+
+
+def _resolve_effective_bridge_concepts(
+    *,
+    profile: DfflProfile,
+    intergroup_interaction_share: float,
+    input_dim: int,
+    n_bridge_pairs: int,
+) -> int:
+    base = max(1, int(profile.bridge_concepts))
+    cap = max(base, int(profile.bridge_concepts_max))
+    if (
+        (not profile.bridge_concepts_adaptive)
+        or n_bridge_pairs <= 0
+        or input_dim < 20
+    ):
+        return base
+    share = float(np.clip(intergroup_interaction_share, 0.0, 1.0))
+    if share >= float(profile.bridge_concepts_high_share_threshold) and n_bridge_pairs <= 8:
+        return min(cap, max(base, 2))
+    return base
+
+
+def resolve_adaptive_rule_swap_ratio(
+    *,
+    base_ratio: float,
+    input_dim: int,
+    intergroup_interaction_share: float,
+) -> tuple[float, str]:
+    ratio = float(base_ratio)
+    if ratio <= 0.0:
+        return 0.0, "base_zero"
+    share = float(np.clip(intergroup_interaction_share, 0.0, 1.0))
+
+    # Quality guardrail: rich inter-group structure should not be perturbed by aggressive swapping.
+    if input_dim >= 40 and share >= 0.65:
+        return 0.0, "high_dim_high_intergroup_disable"
+    if share >= 0.75:
+        return 0.0, "very_high_intergroup_disable"
+    if share >= 0.60:
+        return max(0.0, ratio * 0.5), "high_intergroup_half"
+    if share <= 0.35:
+        return min(0.5, ratio * 1.15), "low_intergroup_boost"
+    return ratio, "mid_intergroup_keep"
+
+
 def make_dffl_bridge_pairs(
     profile: DfflProfile,
     *,
     train_inputs: torch.Tensor,
     train_targets: torch.Tensor,
     input_groups: tuple[tuple[int, ...], ...],
+    feature_geometry: str = "euclidean",
+    adaptive_budget_enabled: bool = True,
 ) -> tuple[tuple[int, int], ...]:
+    geometry = _validate_feature_geometry(feature_geometry)
     if (not profile.bridge_enabled) or profile.bridge_top_pairs <= 0:
         return ()
     input_dim = int(train_inputs.shape[1])
     if input_dim <= 1 or train_inputs.shape[0] < 8:
         return ()
 
-    feature_to_group = np.full(input_dim, fill_value=-1, dtype=np.int64)
-    for group_index, group in enumerate(input_groups):
-        for feature_index in group:
-            feature_to_group[int(feature_index)] = group_index
+    feature_to_group = _build_feature_to_group_index(input_dim, input_groups)
 
     relevance = _feature_target_relevance(train_inputs, train_targets)
+    relevance_stability = _feature_relevance_stability_proxy(train_inputs, train_targets)
     pairwise_corr = _feature_feature_correlation(train_inputs)
+    pairwise_interaction = _pair_interaction_relevance(train_inputs, train_targets)
+    pairwise_hyp_proximity: np.ndarray | None = None
+    if geometry == "hyperbolic":
+        hyp_points = _feature_poincare_embedding(train_inputs)
+        hyp_distances = _pairwise_poincare_distance(hyp_points)
+        max_hyp_distance = float(np.max(hyp_distances)) + 1e-12
+        pairwise_hyp_proximity = 1.0 - (hyp_distances / max_hyp_distance)
+        np.fill_diagonal(pairwise_hyp_proximity, 1.0)
     alpha = min(1.0, max(0.0, float(profile.bridge_pair_score_alpha)))
+    interaction_share = estimate_intergroup_interaction_share(
+        train_inputs=train_inputs,
+        train_targets=train_targets,
+        input_groups=input_groups,
+    )
+    interaction_weight = max(0.0, float(profile.bridge_score_interaction_weight))
+    stability_weight = max(0.0, float(profile.bridge_score_stability_weight))
+    # Enrich bridge selection beyond correlation:
+    # target relevance + interaction strength + stability proxy.
+    base_geom_weight = alpha
+    base_relevance_weight = 1.0 - alpha
+    dynamic_interaction_weight = interaction_weight * (0.75 + 0.5 * float(np.clip(interaction_share, 0.0, 1.0)))
+    dynamic_stability_weight = stability_weight
+    weight_sum = base_geom_weight + base_relevance_weight + dynamic_interaction_weight + dynamic_stability_weight
+    if weight_sum <= 1e-12:
+        geom_weight = 0.5
+        relevance_weight = 0.5
+        interaction_weight_final = 0.0
+        stability_weight_final = 0.0
+    else:
+        geom_weight = base_geom_weight / weight_sum
+        relevance_weight = base_relevance_weight / weight_sum
+        interaction_weight_final = dynamic_interaction_weight / weight_sum
+        stability_weight_final = dynamic_stability_weight / weight_sum
 
     scored_pairs: list[tuple[float, int, int]] = []
     for left in range(input_dim):
@@ -714,33 +1398,26 @@ def make_dffl_bridge_pairs(
             if group_right < 0 or group_right == group_left:
                 continue
             rel_score = float(relevance[left] * relevance[right])
-            corr_score = float(pairwise_corr[left, right])
-            score = alpha * corr_score + (1.0 - alpha) * rel_score
+            if geometry == "hyperbolic":
+                if pairwise_hyp_proximity is None:
+                    raise RuntimeError("hyperbolic pairwise proximity is not initialized.")
+                geom_score = 0.60 * float(pairwise_hyp_proximity[left, right]) + 0.40 * float(
+                    pairwise_corr[left, right]
+                )
+            else:
+                if pairwise_corr is None:
+                    raise RuntimeError("euclidean pairwise correlation is not initialized.")
+                geom_score = float(pairwise_corr[left, right])
+            interaction_score = float(pairwise_interaction[left, right])
+            stability_score = 0.5 * float(relevance_stability[left]) + 0.5 * float(relevance_stability[right])
+            score = (
+                geom_weight * geom_score
+                + relevance_weight * rel_score
+                + interaction_weight_final * interaction_score
+                + stability_weight_final * stability_score
+            )
             scored_pairs.append((score, left, right))
 
-    def _estimate_intergroup_interaction_share() -> float:
-        x = train_inputs.detach().cpu().numpy().astype(np.float64, copy=False)
-        y = train_targets.detach().cpu().numpy().reshape(-1).astype(np.float64, copy=False)
-        x_centered = x - x.mean(axis=0, keepdims=True)
-        y_centered = y - y.mean()
-        y_norm = float(np.sqrt(np.sum(y_centered * y_centered)) + 1e-12)
-        total_strength = 0.0
-        intergroup_strength = 0.0
-        for i in range(input_dim):
-            xi = x_centered[:, i]
-            group_i = int(feature_to_group[i])
-            for j in range(i + 1, input_dim):
-                xj = x_centered[:, j]
-                z = xi * xj
-                z_centered = z - z.mean()
-                z_norm = float(np.sqrt(np.sum(z_centered * z_centered)) + 1e-12)
-                strength = float(abs(np.dot(z_centered, y_centered) / (z_norm * y_norm)))
-                total_strength += strength
-                if int(feature_to_group[j]) != group_i:
-                    intergroup_strength += strength
-        return float(intergroup_strength / (total_strength + 1e-12))
-
-    interaction_share = _estimate_intergroup_interaction_share()
     base_top_pairs = int(profile.bridge_top_pairs)
     if interaction_share >= 0.85:
         effective_top_pairs = base_top_pairs
@@ -751,10 +1428,63 @@ def make_dffl_bridge_pairs(
     else:
         effective_top_pairs = max(1, int(np.ceil(base_top_pairs * 0.33)))
     effective_top_pairs = min(base_top_pairs, effective_top_pairs)
+    # Budget-aware pair search: cap bridge pairs before final selection.
+    budget_probe = _resolve_dffl_effective_rule_budgets(
+        profile=profile,
+        input_dim=input_dim,
+        n_local_groups=len(input_groups),
+        n_bridge_pairs=effective_top_pairs,
+        intergroup_interaction_share=interaction_share,
+        adaptive_budget_enabled=adaptive_budget_enabled,
+    )
+    bridge_rules_per_pair_probe = max(1, int(budget_probe["bridge_max_rules_effective"]))
+    bridge_total_budget_probe = int(budget_probe["bridge_total_budget_effective"])
+    budget_pair_limit = bridge_total_budget_probe // bridge_rules_per_pair_probe
+    if budget_pair_limit <= 0:
+        return ()
+    effective_top_pairs = min(effective_top_pairs, max(1, int(budget_pair_limit)))
 
     scored_pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
-    top_pairs = scored_pairs[:effective_top_pairs]
-    return tuple((int(left), int(right)) for _, left, right in top_pairs)
+
+    # Diversity-aware bridge selection:
+    # avoid overusing the same features and the same group-pair corridor.
+    max_pairs_per_feature = max(1, int(profile.bridge_max_pairs_per_feature))
+    max_pairs_per_group_pair = max(1, int(profile.bridge_max_pairs_per_group_pair))
+    feature_pair_count: dict[int, int] = {}
+    group_pair_count: dict[tuple[int, int], int] = {}
+    selected: list[tuple[float, int, int]] = []
+
+    for score, left, right in scored_pairs:
+        group_left = int(feature_to_group[left])
+        group_right = int(feature_to_group[right])
+        if group_left < 0 or group_right < 0 or group_left == group_right:
+            continue
+        group_pair = (group_left, group_right) if group_left < group_right else (group_right, group_left)
+        if feature_pair_count.get(left, 0) >= max_pairs_per_feature:
+            continue
+        if feature_pair_count.get(right, 0) >= max_pairs_per_feature:
+            continue
+        if group_pair_count.get(group_pair, 0) >= max_pairs_per_group_pair:
+            continue
+        selected.append((score, left, right))
+        feature_pair_count[left] = feature_pair_count.get(left, 0) + 1
+        feature_pair_count[right] = feature_pair_count.get(right, 0) + 1
+        group_pair_count[group_pair] = group_pair_count.get(group_pair, 0) + 1
+        if len(selected) >= effective_top_pairs:
+            break
+
+    if len(selected) < effective_top_pairs:
+        selected_pairs = {(left, right) for _, left, right in selected}
+        for score, left, right in scored_pairs:
+            pair = (left, right)
+            if pair in selected_pairs:
+                continue
+            selected.append((score, left, right))
+            selected_pairs.add(pair)
+            if len(selected) >= effective_top_pairs:
+                break
+
+    return tuple((int(left), int(right)) for _, left, right in selected[:effective_top_pairs])
 
 
 def _concept_width(input_dim: int) -> int:
@@ -925,25 +1655,42 @@ def build_dffl_config(
     input_groups: tuple[tuple[int, ...], ...] | None = None,
     binary_feature_indices: tuple[int, ...] | None = None,
     bridge_feature_pairs: tuple[tuple[int, int], ...] | None = None,
+    intergroup_interaction_share: float | None = None,
+    adaptive_budget_enabled: bool = True,
 ) -> HierarchicalModelConfig:
     groups = input_groups or _make_groups(input_dim, group_size=profile.input_group_size)
     binary_feature_set = set(binary_feature_indices or ())
+    bridge_pairs = tuple(bridge_feature_pairs or ())
+    if not profile.bridge_enabled:
+        bridge_pairs = ()
     n_local_groups = len(groups)
-    local_max_rules_effective = int(profile.local_max_rules)
-    if n_local_groups > 4:
-        stage1_target_total_rules = min(160, max(96, 10 * n_local_groups))
-        if input_dim >= 40 and n_local_groups >= 12:
-            stage1_target_total_rules = min(stage1_target_total_rules, 128)
-        local_max_rules_effective = min(
-            local_max_rules_effective,
-            max(8, stage1_target_total_rules // n_local_groups),
-        )
-    bridge_max_rules_effective = min(profile.bridge_max_rules, max(4, local_max_rules_effective - 2))
-    decision_max_rules_effective = int(profile.decision_max_rules)
-    if n_local_groups >= 12 and input_dim >= 40:
-        decision_max_rules_effective = min(decision_max_rules_effective, 12)
+    share = (
+        float(np.clip(intergroup_interaction_share, 0.0, 1.0))
+        if intergroup_interaction_share is not None
+        else 0.5
+    )
+    effective_bridge_concepts = _resolve_effective_bridge_concepts(
+        profile=profile,
+        intergroup_interaction_share=share,
+        input_dim=input_dim,
+        n_bridge_pairs=len(bridge_pairs),
+    )
+    effective_budgets = _resolve_dffl_effective_rule_budgets(
+        profile=profile,
+        input_dim=input_dim,
+        n_local_groups=n_local_groups,
+        n_bridge_pairs=len(bridge_pairs),
+        intergroup_interaction_share=share,
+        adaptive_budget_enabled=adaptive_budget_enabled,
+    )
+    local_max_rules_effective = int(effective_budgets["local_max_rules_effective"])
+    bridge_max_rules_effective = int(effective_budgets["bridge_max_rules_effective"])
+    decision_max_rules_effective = int(effective_budgets["decision_max_rules_effective"])
+    aggregate_max_rules_effective = int(effective_budgets["aggregate_max_rules_effective"])
 
     stage_1_blocks = []
+    bridge_output_indices: list[int] = []
+    stage_1_offset = 0
     for block_index, indices in enumerate(groups):
         stage_1_blocks.append(
             TransparentBlockConfig(
@@ -967,9 +1714,9 @@ def build_dffl_config(
                 consequent_mode=profile.local_consequent_mode,
             )
         )
+        stage_1_offset += int(profile.local_concepts)
 
-    bridge_pairs = tuple(bridge_feature_pairs or ())
-    if profile.bridge_enabled and bridge_pairs:
+    if bridge_pairs:
         for pair_index, (left_idx, right_idx) in enumerate(bridge_pairs):
             if left_idx == right_idx:
                 continue
@@ -982,8 +1729,8 @@ def build_dffl_config(
                         (var_binary(f"x{idx}") if idx in binary_feature_set else var3(f"x{idx}"))
                         for idx in pair
                     ),
-                    n_concepts=profile.bridge_concepts,
-                    concept_names=tuple(f"s1b_{pair_index}_{i}" for i in range(profile.bridge_concepts)),
+                    n_concepts=effective_bridge_concepts,
+                    concept_names=tuple(f"s1b_{pair_index}_{i}" for i in range(effective_bridge_concepts)),
                     max_rule_arity=min(profile.bridge_max_rule_arity, len(pair)),
                     max_rules=bridge_max_rules_effective,
                     rule_generation_mode=profile.bridge_rule_generation_mode,
@@ -994,15 +1741,36 @@ def build_dffl_config(
                     consequent_mode=profile.local_consequent_mode,
                 )
             )
+            bridge_output_indices.extend(range(stage_1_offset, stage_1_offset + effective_bridge_concepts))
+            stage_1_offset += effective_bridge_concepts
 
-    stage_1_width = int(sum(block.n_concepts for block in stage_1_blocks))
+    stage_1_width = int(stage_1_offset)
     width_driver = len(groups) + len(bridge_pairs)
     stage_2_width = min(
         profile.stage2_width_max,
         max(profile.stage2_width_min, width_driver + 1),
     )
     aggregate_blocks = max(1, min(profile.aggregate_block_count, stage_2_width))
-    aggregate_rule_budget = _split_even(profile.aggregate_max_rules, aggregate_blocks)
+    aggregate_rule_budget_total = max(1, aggregate_max_rules_effective)
+    bridge_token_rules_effective = 0
+    bridge_token_concepts_effective = 0
+    if profile.bridge_token_enabled and bridge_output_indices and aggregate_rule_budget_total >= 6:
+        bridge_token_concepts_effective = max(1, int(profile.bridge_token_concepts))
+        bridge_token_rules_effective = min(
+            int(profile.bridge_token_max_rules),
+            max(1, aggregate_rule_budget_total // 5),
+        )
+        aggregate_rule_budget_total = max(1, aggregate_rule_budget_total - bridge_token_rules_effective)
+    global_max_rules_effective = 0
+    if profile.aggregate_global_context_dim > 0:
+        global_cap = (
+            int(profile.aggregate_global_max_rules)
+            if profile.aggregate_global_max_rules > 0
+            else max(4, min(profile.aggregate_max_rules // 2, 12))
+        )
+        global_max_rules_effective = min(global_cap, max(2, aggregate_rule_budget_total // 3))
+        aggregate_rule_budget_total = max(1, aggregate_rule_budget_total - global_max_rules_effective)
+    aggregate_rule_budget = _split_even(aggregate_rule_budget_total, aggregate_blocks)
     aggregate_output_dims = _split_even(stage_2_width, aggregate_blocks)
     aggregate_input_windows = _build_overlapping_windows(
         stage_1_width,
@@ -1035,13 +1803,33 @@ def build_dffl_config(
             )
         )
 
+    if bridge_token_concepts_effective > 0 and bridge_token_rules_effective > 0 and bridge_output_indices:
+        bridge_token_names = tuple(
+            f"s2_{concept_offset + i}" for i in range(bridge_token_concepts_effective)
+        )
+        concept_offset += bridge_token_concepts_effective
+        stage_2_blocks.append(
+            TransparentBlockConfig(
+                name="dffl_aggregate_bridge_token",
+                input_indices=tuple(bridge_output_indices),
+                variables=tuple(var3(f"s1_{i}") for i in bridge_output_indices),
+                n_concepts=bridge_token_concepts_effective,
+                concept_names=bridge_token_names,
+                max_rule_arity=min(profile.bridge_token_max_rule_arity, len(bridge_output_indices)),
+                max_rules=bridge_token_rules_effective,
+                rule_generation_mode=profile.aggregate_rule_generation_mode,
+                prototype_term_limit=profile.aggregate_prototype_term_limit,
+                prototype_scoring_mode=profile.aggregate_prototype_scoring_mode,
+                prototype_variable_pool_size=profile.aggregate_prototype_variable_pool_size,
+                prototype_sample_size=profile.aggregate_prototype_sample_size,
+                consequent_mode=profile.aggregate_consequent_mode,
+            )
+        )
+        stage_2_width += bridge_token_concepts_effective
+
     if profile.aggregate_global_context_dim > 0:
         global_dim = int(profile.aggregate_global_context_dim)
-        global_max_rules = (
-            int(profile.aggregate_global_max_rules)
-            if profile.aggregate_global_max_rules > 0
-            else max(4, min(profile.aggregate_max_rules // 2, 12))
-        )
+        global_max_rules = max(1, int(global_max_rules_effective))
         global_names = tuple(f"s2g_{i}" for i in range(global_dim))
         stage_2_blocks.append(
             TransparentBlockConfig(
@@ -1221,6 +2009,27 @@ def prepare_dataset_split(
     )
 
 
+def _prepare_structure_analysis_tensors(
+    *,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    device: str | None,
+) -> tuple[torch.Tensor, torch.Tensor, str]:
+    if device is None:
+        return inputs, targets, "cpu_default"
+    requested = str(device).strip().lower()
+    if requested.startswith("cuda"):
+        if not torch.cuda.is_available():
+            return inputs, targets, "cpu_fallback_no_cuda"
+        target_device = torch.device(device)
+        return (
+            inputs.to(device=target_device, dtype=torch.float32, non_blocking=True),
+            targets.to(device=target_device, dtype=torch.float32, non_blocking=True),
+            str(target_device),
+        )
+    return inputs.to(dtype=torch.float32), targets.to(dtype=torch.float32), "cpu_explicit"
+
+
 def run_single_seed_dataset_benchmark(
     spec: DatasetSpec,
     *,
@@ -1235,6 +2044,15 @@ def run_single_seed_dataset_benchmark(
     fuzzy_learning_rate: float,
     dffl_learning_rate: float,
     dffl_profile_name: str,
+    feature_geometry: str,
+    binary_heavy_grouping_mode: str,
+    dffl_rule_swap_ratio: float | None,
+    dffl_rule_swap_min_keep: int | None,
+    dffl_adaptive_rule_swap: bool,
+    dffl_total_rule_budget: int | None,
+    dffl_bridge_score_interaction_weight: float | None,
+    dffl_bridge_score_stability_weight: float | None,
+    dffl_adaptive_budget: bool,
     batch_size: int,
     patience: int,
     classification_threshold: float,
@@ -1244,6 +2062,8 @@ def run_single_seed_dataset_benchmark(
     fuzzy_models: tuple[str, ...] = FUZZY_MODEL_NAMES,
     include_sklearn: bool = True,
 ):
+    feature_geometry_requested = _validate_feature_geometry(feature_geometry)
+    binary_heavy_grouping_mode = _validate_binary_heavy_grouping_mode(binary_heavy_grouping_mode)
     phase_started_at = time.perf_counter()
     set_seed(seed)
     progress_log(f"seed={seed} split: start")
@@ -1274,33 +2094,109 @@ def run_single_seed_dataset_benchmark(
     if train_noise_sigma > 0.0 and spec.task_type == "regression":
         train_targets = train_targets + train_noise_sigma * torch.randn_like(train_targets)
 
+    analysis_train_inputs, analysis_train_targets, analysis_device = _prepare_structure_analysis_tensors(
+        inputs=train_inputs,
+        targets=train_targets,
+        device=device,
+    )
+
     dffl_profile = resolve_dffl_profile(
         profile_name=dffl_profile_name,
         task_type=spec.task_type,
         n_samples=split.n_samples,
         input_dim=split.input_dim,
     )
+    dffl_profile = apply_dffl_profile_overrides(
+        dffl_profile,
+        rule_swap_ratio=dffl_rule_swap_ratio,
+        rule_swap_min_keep=dffl_rule_swap_min_keep,
+        total_rule_budget=dffl_total_rule_budget,
+        bridge_score_interaction_weight=dffl_bridge_score_interaction_weight,
+        bridge_score_stability_weight=dffl_bridge_score_stability_weight,
+    )
+    feature_geometry_effective, feature_geometry_policy = _resolve_effective_feature_geometry(
+        requested_geometry=feature_geometry_requested,
+        profile=dffl_profile,
+        train_inputs=analysis_train_inputs,
+        train_targets=analysis_train_targets,
+    )
     dffl_input_groups = make_dffl_input_groups(
         dffl_profile,
-        train_inputs=train_inputs,
-        train_targets=train_targets,
+        train_inputs=analysis_train_inputs,
+        train_targets=analysis_train_targets,
+        feature_geometry=feature_geometry_effective,
+        binary_heavy_grouping_mode=binary_heavy_grouping_mode,
     )
     dffl_bridge_pairs = make_dffl_bridge_pairs(
         dffl_profile,
-        train_inputs=train_inputs,
-        train_targets=train_targets,
+        train_inputs=analysis_train_inputs,
+        train_targets=analysis_train_targets,
+        input_groups=dffl_input_groups,
+        feature_geometry=feature_geometry_effective,
+        adaptive_budget_enabled=dffl_adaptive_budget,
+    )
+    dffl_intergroup_share = estimate_intergroup_interaction_share(
+        train_inputs=analysis_train_inputs,
+        train_targets=analysis_train_targets,
         input_groups=dffl_input_groups,
     )
-    dffl_binary_feature_indices = _detect_binary_feature_indices(train_inputs)
+    dffl_bridge_concepts_effective = _resolve_effective_bridge_concepts(
+        profile=dffl_profile,
+        intergroup_interaction_share=dffl_intergroup_share,
+        input_dim=split.input_dim,
+        n_bridge_pairs=len(dffl_bridge_pairs),
+    )
+    dffl_budget_snapshot = _resolve_dffl_effective_rule_budgets(
+        profile=dffl_profile,
+        input_dim=split.input_dim,
+        n_local_groups=len(dffl_input_groups),
+        n_bridge_pairs=len(dffl_bridge_pairs),
+        intergroup_interaction_share=dffl_intergroup_share,
+        adaptive_budget_enabled=dffl_adaptive_budget,
+    )
+    dffl_rule_swap_ratio_effective = float(dffl_profile.stagewise_rule_swap_ratio)
+    dffl_rule_swap_reason = "profile_default"
+    if dffl_rule_swap_ratio is not None:
+        dffl_rule_swap_reason = "cli_override"
+    elif dffl_adaptive_rule_swap:
+        dffl_rule_swap_ratio_effective, dffl_rule_swap_reason = resolve_adaptive_rule_swap_ratio(
+            base_ratio=dffl_rule_swap_ratio_effective,
+            input_dim=split.input_dim,
+            intergroup_interaction_share=dffl_intergroup_share,
+        )
+    dffl_rule_swap_min_keep_effective = (
+        int(dffl_profile.stagewise_rule_swap_min_keep) if dffl_rule_swap_ratio_effective > 0.0 else 0
+    )
+    dffl_binary_feature_indices = _detect_binary_feature_indices(analysis_train_inputs)
     progress_log(
-        "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, groups={groups}, bridges={bridges}".format(
+        (
+            "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, "
+            "analysis_device={analysis_device}, "
+            "feature_geometry={feature_geometry}, feature_geometry_policy={feature_geometry_policy}, binary_heavy_grouping={binary_mode}, "
+            "groups={groups}, bridges={bridges}, intergroup_share={share:.3f}, "
+            "bridge_concepts_effective={bridge_concepts}, "
+            "rule_swap={swap:.3f}, swap_keep={keep}, swap_policy={policy}, "
+            "budget_total={budget_total}, budget_policy={budget_policy}, adaptive_budget={adaptive_budget}"
+        ).format(
             seed=seed,
             name=dffl_profile.name,
             task=spec.task_type,
             device=device or "default",
+            analysis_device=analysis_device,
             grouping=dffl_profile.input_group_strategy,
+            feature_geometry=feature_geometry_effective,
+            feature_geometry_policy=feature_geometry_policy,
+            binary_mode=binary_heavy_grouping_mode,
             groups=len(dffl_input_groups),
             bridges=len(dffl_bridge_pairs),
+            share=dffl_intergroup_share,
+            bridge_concepts=int(dffl_bridge_concepts_effective),
+            swap=dffl_rule_swap_ratio_effective,
+            keep=dffl_rule_swap_min_keep_effective,
+            policy=dffl_rule_swap_reason,
+            budget_total=int(dffl_budget_snapshot["total_rule_budget_effective"]),
+            budget_policy=str(dffl_budget_snapshot["allocation_policy"]),
+            adaptive_budget=dffl_adaptive_budget,
         )
     )
 
@@ -1344,6 +2240,13 @@ def run_single_seed_dataset_benchmark(
             input_groups=dffl_input_groups,
             binary_feature_indices=dffl_binary_feature_indices,
             bridge_feature_pairs=dffl_bridge_pairs,
+            intergroup_interaction_share=dffl_intergroup_share,
+            adaptive_budget_enabled=dffl_adaptive_budget,
+        )
+        dffl_block_agreement_weight, dffl_block_agreement_target_corr = _resolve_dffl_block_agreement_params(
+            profile=dffl_profile,
+            intergroup_interaction_share=dffl_intergroup_share,
+            n_bridge_pairs=len(dffl_bridge_pairs),
         )
         dffl_training_config = TrainingConfig(
             task_type=spec.task_type,
@@ -1372,6 +2275,9 @@ def run_single_seed_dataset_benchmark(
             rule_length_weight=dffl_profile.rule_length_weight,
             decision_usage_balance_weight=dffl_profile.decision_usage_balance_weight,
             block_gate_l1_weight=dffl_profile.block_gate_l1_weight,
+            block_agreement_weight=dffl_block_agreement_weight,
+            block_agreement_target_corr=dffl_block_agreement_target_corr,
+            block_agreement_stage_limit=dffl_profile.block_agreement_stage_limit,
             regularization_warmup_epochs=max(1, max_epochs // 3),
             top_k_warmup_epochs=(max(1, max_epochs // 4) if dffl_profile.top_k_rules is not None else 0),
             prune_after_fit=False,
@@ -1407,6 +2313,8 @@ def run_single_seed_dataset_benchmark(
                     rule_sparsity_weight=0.0,
                     stage_selection_metric="auto",
                     stage_selection_threshold=classification_threshold,
+                    rule_swap_ratio=dffl_rule_swap_ratio_effective,
+                    rule_swap_min_keep=dffl_rule_swap_min_keep_effective,
                 ),
                 training_config=dffl_training_config,
                 refinement_loop_config=RefinementLoopConfig(
@@ -1887,37 +2795,74 @@ def _summarize_dffl_architecture(
     profile: DfflProfile,
     input_groups: tuple[tuple[int, ...], ...],
     bridge_pairs: tuple[tuple[int, int], ...] = (),
+    intergroup_interaction_share: float | None = None,
+    adaptive_budget_enabled: bool = True,
 ) -> dict[str, object]:
+    bridge_pairs = tuple(bridge_pairs) if profile.bridge_enabled else ()
     n_local_groups = len(input_groups)
-    local_max_rules_effective = int(profile.local_max_rules)
-    if n_local_groups > 4:
-        stage1_target_total_rules = min(160, max(96, 10 * n_local_groups))
-        local_max_rules_effective = min(
-            local_max_rules_effective,
-            max(8, stage1_target_total_rules // n_local_groups),
-        )
-    bridge_max_rules_effective = min(profile.bridge_max_rules, max(4, local_max_rules_effective - 2))
-    decision_max_rules_effective = int(profile.decision_max_rules)
-    if n_local_groups >= 12 and input_dim >= 40:
-        decision_max_rules_effective = min(decision_max_rules_effective, 12)
+    share = (
+        float(np.clip(intergroup_interaction_share, 0.0, 1.0))
+        if intergroup_interaction_share is not None
+        else 0.5
+    )
+    effective_budgets = _resolve_dffl_effective_rule_budgets(
+        profile=profile,
+        input_dim=input_dim,
+        n_local_groups=n_local_groups,
+        n_bridge_pairs=len(bridge_pairs),
+        intergroup_interaction_share=share,
+        adaptive_budget_enabled=adaptive_budget_enabled,
+    )
+    effective_bridge_concepts = _resolve_effective_bridge_concepts(
+        profile=profile,
+        intergroup_interaction_share=share,
+        input_dim=input_dim,
+        n_bridge_pairs=len(bridge_pairs),
+    )
+    local_max_rules_effective = int(effective_budgets["local_max_rules_effective"])
+    bridge_max_rules_effective = int(effective_budgets["bridge_max_rules_effective"])
+    decision_max_rules_effective = int(effective_budgets["decision_max_rules_effective"])
+    aggregate_max_rules_effective = int(effective_budgets["aggregate_max_rules_effective"])
 
-    bridge_width = int(profile.bridge_concepts * len(bridge_pairs))
+    bridge_width = int(effective_bridge_concepts * len(bridge_pairs))
     stage_1_width = profile.local_concepts * len(input_groups) + bridge_width
     stage_2_width_base = min(
         profile.stage2_width_max,
         max(profile.stage2_width_min, len(input_groups) + len(bridge_pairs) + 1),
     )
     aggregate_blocks = max(1, min(profile.aggregate_block_count, stage_2_width_base))
-    aggregate_rule_budget = _split_even(profile.aggregate_max_rules, aggregate_blocks)
+    aggregate_budget_for_blocks = max(1, aggregate_max_rules_effective)
+    bridge_token_rules_effective = 0
+    bridge_token_concepts_effective = 0
+    if profile.bridge_token_enabled and bridge_pairs and aggregate_budget_for_blocks >= 6:
+        bridge_token_concepts_effective = max(1, int(profile.bridge_token_concepts))
+        bridge_token_rules_effective = min(
+            int(profile.bridge_token_max_rules),
+            max(1, aggregate_budget_for_blocks // 5),
+        )
+        aggregate_budget_for_blocks = max(1, aggregate_budget_for_blocks - bridge_token_rules_effective)
+    aggregate_global_max_rules_effective = 0
+    if profile.aggregate_global_context_dim > 0:
+        global_cap = (
+            int(profile.aggregate_global_max_rules)
+            if profile.aggregate_global_max_rules > 0
+            else max(4, min(profile.aggregate_max_rules // 2, 12))
+        )
+        aggregate_global_max_rules_effective = min(global_cap, max(2, aggregate_budget_for_blocks // 3))
+        aggregate_budget_for_blocks = max(1, aggregate_budget_for_blocks - aggregate_global_max_rules_effective)
+    aggregate_rule_budget = _split_even(aggregate_budget_for_blocks, aggregate_blocks)
     stage_2_width_total = stage_2_width_base + (
         int(profile.aggregate_global_context_dim) if profile.aggregate_global_context_dim > 0 else 0
     )
+    stage_2_width_total += int(bridge_token_concepts_effective)
 
     return {
         "input_dim": int(input_dim),
         "task_type": str(task_type),
         "resolved_profile_name": profile.name,
+        "adaptive_budget_enabled": bool(adaptive_budget_enabled),
         "profile_params": asdict(profile),
+        "intergroup_interaction_share": float(share),
         "input_grouping": {
             "strategy": profile.input_group_strategy,
             "group_count": len(input_groups),
@@ -1927,8 +2872,11 @@ def _summarize_dffl_architecture(
             "enabled": bool(profile.bridge_enabled),
             "pair_count": int(len(bridge_pairs)),
             "pairs": [[int(left), int(right)] for left, right in bridge_pairs],
-            "concepts_per_pair": int(profile.bridge_concepts),
+            "concepts_per_pair": int(effective_bridge_concepts),
             "width": int(bridge_width),
+            "token_enabled": bool(profile.bridge_token_enabled),
+            "token_concepts_effective": int(bridge_token_concepts_effective),
+            "token_max_rules_effective": int(bridge_token_rules_effective),
         },
         "derived_widths": {
             "stage_1_width": int(stage_1_width),
@@ -1937,12 +2885,16 @@ def _summarize_dffl_architecture(
             "aggregate_blocks": int(aggregate_blocks),
         },
         "rule_budgets": {
+            "allocation_policy": str(effective_budgets["allocation_policy"]),
+            "total_rule_budget_effective": int(effective_budgets["total_rule_budget_effective"]),
             "local_max_rules_per_block": int(profile.local_max_rules),
             "local_max_rules_per_block_effective": int(local_max_rules_effective),
-            "aggregate_max_rules_total": int(profile.aggregate_max_rules),
+            "aggregate_max_rules_total": int(aggregate_max_rules_effective),
             "aggregate_max_rules_split": [int(value) for value in aggregate_rule_budget],
+            "aggregate_bridge_token_concepts": int(bridge_token_concepts_effective),
+            "aggregate_bridge_token_max_rules": int(bridge_token_rules_effective),
             "aggregate_global_context_dim": int(profile.aggregate_global_context_dim),
-            "aggregate_global_max_rules": int(profile.aggregate_global_max_rules),
+            "aggregate_global_max_rules": int(aggregate_global_max_rules_effective),
             "bridge_max_rules_per_block": int(profile.bridge_max_rules),
             "bridge_max_rules_per_block_effective": int(bridge_max_rules_effective),
             "decision_max_rules": int(profile.decision_max_rules),
@@ -1981,7 +2933,34 @@ def build_reproducibility_manifest_payload(
             "execution": {
                 "fuzzy_models": list(fuzzy_models),
                 "include_sklearn_baselines": bool(not args.skip_sklearn),
+                "gpu_only": bool(args.gpu_only),
                 "device": args.device if args.device is not None else "default",
+                "feature_geometry_requested": str(args.feature_geometry),
+                "binary_heavy_grouping_mode": str(args.binary_heavy_grouping),
+                "feature_geometry_auto_policy": (
+                    "if d>=80 and n>=4000 and intergroup_share>=0.80 and binary_ratio<=0.45 then hyperbolic else euclidean"
+                ),
+                "dffl_adaptive_rule_swap": bool(not args.disable_dffl_adaptive_rule_swap),
+                "dffl_adaptive_budget": bool(not args.disable_dffl_adaptive_budget),
+                "dffl_rule_swap_ratio_override": (
+                    float(args.dffl_rule_swap_ratio) if args.dffl_rule_swap_ratio is not None else None
+                ),
+                "dffl_rule_swap_min_keep_override": (
+                    int(args.dffl_rule_swap_min_keep) if args.dffl_rule_swap_min_keep is not None else None
+                ),
+                "dffl_total_rule_budget_override": (
+                    int(args.dffl_total_rule_budget) if args.dffl_total_rule_budget is not None else None
+                ),
+                "dffl_bridge_score_interaction_weight_override": (
+                    float(args.dffl_bridge_score_interaction_weight)
+                    if args.dffl_bridge_score_interaction_weight is not None
+                    else None
+                ),
+                "dffl_bridge_score_stability_weight_override": (
+                    float(args.dffl_bridge_score_stability_weight)
+                    if args.dffl_bridge_score_stability_weight is not None
+                    else None
+                ),
             },
             "training_budgets": {
                 "max_epochs": int(args.max_epochs),
@@ -2037,6 +3016,27 @@ def build_reproducibility_manifest_payload(
             "ruanfis_refined_deep": {
                 "dffl_profile_requested": str(args.dffl_profile),
                 "dffl_one_phase": bool(args.dffl_one_phase),
+                "dffl_adaptive_rule_swap": bool(not args.disable_dffl_adaptive_rule_swap),
+                "dffl_adaptive_budget": bool(not args.disable_dffl_adaptive_budget),
+                "dffl_rule_swap_ratio_override": (
+                    float(args.dffl_rule_swap_ratio) if args.dffl_rule_swap_ratio is not None else None
+                ),
+                "dffl_rule_swap_min_keep_override": (
+                    int(args.dffl_rule_swap_min_keep) if args.dffl_rule_swap_min_keep is not None else None
+                ),
+                "dffl_total_rule_budget_override": (
+                    int(args.dffl_total_rule_budget) if args.dffl_total_rule_budget is not None else None
+                ),
+                "dffl_bridge_score_interaction_weight_override": (
+                    float(args.dffl_bridge_score_interaction_weight)
+                    if args.dffl_bridge_score_interaction_weight is not None
+                    else None
+                ),
+                "dffl_bridge_score_stability_weight_override": (
+                    float(args.dffl_bridge_score_stability_weight)
+                    if args.dffl_bridge_score_stability_weight is not None
+                    else None
+                ),
                 "training_base": {
                     "max_epochs": int(args.max_epochs),
                     "learning_rate_base": float(args.dffl_learning_rate),
@@ -2063,6 +3063,7 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     protocol = payload["protocol"]
     split = protocol["split"]
     preprocessing = protocol["preprocessing"]
+    execution = protocol["execution"]
     training = protocol["training_budgets"]
     evaluation = protocol["evaluation"]
 
@@ -2089,6 +3090,15 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     lines.append(f"- target_scaling_classification: {preprocessing['target_scaling_classification']}")
     lines.append(f"- train_noise_sigma_regression_only: `{preprocessing['train_noise_sigma_regression_only']}`")
     lines.append("")
+    lines.append("## Execution")
+    lines.append("")
+    lines.append(f"- feature_geometry_requested: `{execution['feature_geometry_requested']}`")
+    lines.append(f"- binary_heavy_grouping_mode: `{execution['binary_heavy_grouping_mode']}`")
+    lines.append(f"- feature_geometry_auto_policy: {execution['feature_geometry_auto_policy']}")
+    lines.append(f"- device: `{execution['device']}`")
+    lines.append(f"- gpu_only: `{execution['gpu_only']}`")
+    lines.append(f"- include_sklearn_baselines: `{execution['include_sklearn_baselines']}`")
+    lines.append("")
     lines.append("## Training Budgets")
     lines.append("")
     lines.append(f"- max_epochs: `{training['max_epochs']}`")
@@ -2112,21 +3122,23 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     lines.append("## Dataset-Specific DFFL Resolution")
     lines.append("")
     lines.append(
-        "| dataset | task | n_samples | input_dim | profile_resolved | one_phase | lr_effective | "
+        "| dataset | task | n_samples | input_dim | profile_resolved | geom_req | geom_eff | one_phase | lr_effective | "
         "groups | stage1_width | stage2_width_total | decision_max_rules |"
     )
-    lines.append("| --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| --- | --- | ---: | ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |")
     for dataset_name, entry in payload["dataset_specific_protocols"].items():
         dffl = entry["dffl"]
         arch = dffl["architecture"]
         lines.append(
-            "| {dataset} | {task} | {n_samples} | {input_dim} | {profile} | {one_phase} | {lr:.6f} | "
+            "| {dataset} | {task} | {n_samples} | {input_dim} | {profile} | {geom_req} | {geom_eff} | {one_phase} | {lr:.6f} | "
             "{groups} | {s1} | {s2} | {dec_rules} |".format(
                 dataset=dataset_name,
                 task=entry["task_type"],
                 n_samples=entry["n_samples"],
                 input_dim=entry["input_dim"],
                 profile=dffl["resolved_profile"],
+                geom_req=dffl.get("feature_geometry_requested", "n/a"),
+                geom_eff=dffl.get("feature_geometry_effective", "n/a"),
                 one_phase=dffl["one_phase"],
                 lr=dffl["effective_learning_rate"],
                 groups=arch["input_grouping"]["group_count"],
@@ -2172,6 +3184,60 @@ def main() -> None:
         choices=tuple(DFFL_PROFILES.keys()) + ("quality_auto",),
         help="DFFL tuning profile: fixed baseline/quality/quality_balanced or adaptive quality_auto.",
     )
+    parser.add_argument(
+        "--feature-geometry",
+        type=str,
+        default="euclidean",
+        choices=FEATURE_GEOMETRIES,
+        help="Feature geometry for DFFL grouping/bridges: euclidean (corr) or hyperbolic (Poincare graph).",
+    )
+    parser.add_argument(
+        "--binary-heavy-grouping",
+        type=str,
+        default="binary_aware",
+        choices=BINARY_HEAVY_GROUPING_MODES,
+        help="Stage-1 grouping policy when binary feature ratio is high.",
+    )
+    parser.add_argument(
+        "--dffl-rule-swap-ratio",
+        type=float,
+        default=None,
+        help="Optional override for stage-wise rule swap ratio in [0,1].",
+    )
+    parser.add_argument(
+        "--dffl-rule-swap-min-keep",
+        type=int,
+        default=None,
+        help="Optional override for minimum kept rules during stage-wise rule swap.",
+    )
+    parser.add_argument(
+        "--disable-dffl-adaptive-rule-swap",
+        action="store_true",
+        help="Disable adaptive rule-swap policy (use profile/override value directly).",
+    )
+    parser.add_argument(
+        "--disable-dffl-adaptive-budget",
+        action="store_true",
+        help="Disable adaptive DFFL rule-budget allocation (use full cap-level budget).",
+    )
+    parser.add_argument(
+        "--dffl-total-rule-budget",
+        type=int,
+        default=None,
+        help="Optional explicit total DFFL rule budget (0 means profile/default behavior).",
+    )
+    parser.add_argument(
+        "--dffl-bridge-score-interaction-weight",
+        type=float,
+        default=None,
+        help="Optional override for bridge pair interaction-score weight.",
+    )
+    parser.add_argument(
+        "--dffl-bridge-score-stability-weight",
+        type=float,
+        default=None,
+        help="Optional override for bridge pair stability-score weight.",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--classification-threshold", type=float, default=0.5)
@@ -2206,6 +3272,11 @@ def main() -> None:
         action="store_true",
         help="Skip sklearn baselines for fast fuzzy-only tuning.",
     )
+    parser.add_argument(
+        "--gpu-only",
+        action="store_true",
+        help="Force GPU-only fuzzy pipeline: requires CUDA, sets --device=cuda and enables --skip-sklearn.",
+    )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--summary-table-output", type=Path, default=None)
     parser.add_argument("--json-output", type=Path, default=None)
@@ -2214,6 +3285,9 @@ def main() -> None:
     parser.add_argument("--reproducibility-manifest-json-output", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
+    _apply_gpu_only_mode(args)
+    args.feature_geometry = _validate_feature_geometry(args.feature_geometry)
+    args.binary_heavy_grouping = _validate_binary_heavy_grouping_mode(args.binary_heavy_grouping)
 
     dataset_names = parse_dataset_names(args.datasets)
     unknown = [name for name in dataset_names if name not in DATASETS]
@@ -2236,6 +3310,14 @@ def main() -> None:
             n_samples=int(dataset_features.shape[0]),
             input_dim=int(dataset_features.shape[1]),
         )
+        resolved_profile = apply_dffl_profile_overrides(
+            resolved_profile,
+            rule_swap_ratio=args.dffl_rule_swap_ratio,
+            rule_swap_min_keep=args.dffl_rule_swap_min_keep,
+            total_rule_budget=args.dffl_total_rule_budget,
+            bridge_score_interaction_weight=args.dffl_bridge_score_interaction_weight,
+            bridge_score_stability_weight=args.dffl_bridge_score_stability_weight,
+        )
         per_seed_results = []
         total_seeds = len(seeds)
         for seed_index, seed in enumerate(seeds, start=1):
@@ -2256,6 +3338,15 @@ def main() -> None:
                 fuzzy_learning_rate=args.fuzzy_learning_rate,
                 dffl_learning_rate=args.dffl_learning_rate,
                 dffl_profile_name=args.dffl_profile,
+                feature_geometry=args.feature_geometry,
+                binary_heavy_grouping_mode=args.binary_heavy_grouping,
+                dffl_rule_swap_ratio=args.dffl_rule_swap_ratio,
+                dffl_rule_swap_min_keep=args.dffl_rule_swap_min_keep,
+                dffl_adaptive_rule_swap=not args.disable_dffl_adaptive_rule_swap,
+                dffl_total_rule_budget=args.dffl_total_rule_budget,
+                dffl_bridge_score_interaction_weight=args.dffl_bridge_score_interaction_weight,
+                dffl_bridge_score_stability_weight=args.dffl_bridge_score_stability_weight,
+                dffl_adaptive_budget=not args.disable_dffl_adaptive_budget,
                 batch_size=args.batch_size,
                 patience=args.patience,
                 classification_threshold=args.classification_threshold,
@@ -2289,15 +3380,35 @@ def main() -> None:
         else:
             targets_tensor = torch.from_numpy(targets_array)
         full_inputs_tensor = torch.from_numpy(np.asarray(dataset_features).astype(np.float32))
+        analysis_full_inputs, analysis_full_targets, analysis_full_device = _prepare_structure_analysis_tensors(
+            inputs=full_inputs_tensor,
+            targets=targets_tensor,
+            device=args.device,
+        )
+        dataset_feature_geometry_effective, dataset_feature_geometry_policy = _resolve_effective_feature_geometry(
+            requested_geometry=args.feature_geometry,
+            profile=resolved_profile,
+            train_inputs=analysis_full_inputs,
+            train_targets=analysis_full_targets,
+        )
         dffl_groups = make_dffl_input_groups(
             resolved_profile,
-            train_inputs=full_inputs_tensor,
-            train_targets=targets_tensor,
+            train_inputs=analysis_full_inputs,
+            train_targets=analysis_full_targets,
+            feature_geometry=dataset_feature_geometry_effective,
+            binary_heavy_grouping_mode=args.binary_heavy_grouping,
         )
         dffl_bridge_pairs = make_dffl_bridge_pairs(
             resolved_profile,
-            train_inputs=full_inputs_tensor,
-            train_targets=targets_tensor,
+            train_inputs=analysis_full_inputs,
+            train_targets=analysis_full_targets,
+            input_groups=dffl_groups,
+            feature_geometry=dataset_feature_geometry_effective,
+            adaptive_budget_enabled=not args.disable_dffl_adaptive_budget,
+        )
+        dffl_intergroup_share = estimate_intergroup_interaction_share(
+            train_inputs=analysis_full_inputs,
+            train_targets=analysis_full_targets,
             input_groups=dffl_groups,
         )
         dffl_lr_effective = (
@@ -2317,6 +3428,11 @@ def main() -> None:
             },
             "dffl": {
                 "resolved_profile": resolved_profile.name,
+                "feature_geometry_requested": str(args.feature_geometry),
+                "feature_geometry_effective": dataset_feature_geometry_effective,
+                "feature_geometry_policy": dataset_feature_geometry_policy,
+                "analysis_device_effective": analysis_full_device,
+                "binary_heavy_grouping_mode": str(args.binary_heavy_grouping),
                 "one_phase": bool(args.dffl_one_phase),
                 "effective_learning_rate": float(dffl_lr_effective),
                 "refinement_cycles_effective": int(max(args.refinement_cycles, resolved_profile.refinement_cycle_floor)),
@@ -2331,6 +3447,8 @@ def main() -> None:
                     profile=resolved_profile,
                     input_groups=dffl_groups,
                     bridge_pairs=dffl_bridge_pairs,
+                    intergroup_interaction_share=dffl_intergroup_share,
+                    adaptive_budget_enabled=not args.disable_dffl_adaptive_budget,
                 ),
             },
         }
@@ -2365,7 +3483,17 @@ def main() -> None:
         f"seeds: {', '.join(str(seed) for seed in seeds)}",
         f"train_noise_sigma (regression only): {args.train_noise_sigma:.4f}",
         f"dffl_profile: {args.dffl_profile}",
+        f"feature_geometry: {args.feature_geometry}",
+        f"binary_heavy_grouping: {args.binary_heavy_grouping}",
+        f"dffl_rule_swap_ratio_override: {args.dffl_rule_swap_ratio}",
+        f"dffl_rule_swap_min_keep_override: {args.dffl_rule_swap_min_keep}",
+        f"dffl_adaptive_rule_swap: {not args.disable_dffl_adaptive_rule_swap}",
+        f"dffl_adaptive_budget: {not args.disable_dffl_adaptive_budget}",
+        f"dffl_total_rule_budget_override: {args.dffl_total_rule_budget}",
+        f"dffl_bridge_score_interaction_weight_override: {args.dffl_bridge_score_interaction_weight}",
+        f"dffl_bridge_score_stability_weight_override: {args.dffl_bridge_score_stability_weight}",
         f"dffl_one_phase: {args.dffl_one_phase}",
+        f"gpu_only: {args.gpu_only}",
         f"fuzzy_models: {', '.join(fuzzy_models)}",
         f"sklearn_baselines: {'off' if args.skip_sklearn else 'on'}",
         "",
@@ -2408,7 +3536,17 @@ def main() -> None:
             "seeds": list(seeds),
             "train_noise_sigma": float(args.train_noise_sigma),
             "dffl_profile": args.dffl_profile,
+            "feature_geometry": args.feature_geometry,
+            "binary_heavy_grouping": args.binary_heavy_grouping,
+            "dffl_rule_swap_ratio_override": args.dffl_rule_swap_ratio,
+            "dffl_rule_swap_min_keep_override": args.dffl_rule_swap_min_keep,
+            "dffl_adaptive_rule_swap": bool(not args.disable_dffl_adaptive_rule_swap),
+            "dffl_adaptive_budget": bool(not args.disable_dffl_adaptive_budget),
+            "dffl_total_rule_budget_override": args.dffl_total_rule_budget,
+            "dffl_bridge_score_interaction_weight_override": args.dffl_bridge_score_interaction_weight,
+            "dffl_bridge_score_stability_weight_override": args.dffl_bridge_score_stability_weight,
             "dffl_one_phase": bool(args.dffl_one_phase),
+            "gpu_only": bool(args.gpu_only),
             "fuzzy_models": list(fuzzy_models),
             "skip_sklearn": bool(args.skip_sklearn),
             "dataset_results": {
