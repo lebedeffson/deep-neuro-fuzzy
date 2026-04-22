@@ -29,6 +29,7 @@ class TransparentBlockConfig:
     prototype_scoring_mode: str = "max"
     prototype_variable_pool_size: int | None = None
     prototype_sample_size: int | None = 256
+    consequent_mode: str = "constant"
 
     def term_counts(self) -> tuple[int, ...]:
         return tuple(variable.n_terms for variable in self.variables)
@@ -45,6 +46,8 @@ class TransparentBlockConfig:
 class StageConfig:
     name: str
     blocks: tuple[TransparentBlockConfig, ...]
+    enable_block_gates: bool = False
+    block_gate_init_logit: float = 5.0
 
     def generated_rule_count(self) -> int:
         return sum(block.generated_rule_count() for block in self.blocks)
@@ -122,7 +125,7 @@ def _maybe_subsample_inputs(inputs: Tensor, sample_size: int | None) -> Tensor:
         return inputs
     if sample_size <= 0:
         raise ValueError("prototype_sample_size must be positive when provided.")
-    indices = torch.linspace(0, inputs.size(0) - 1, steps=sample_size, dtype=torch.long, device=inputs.device)
+    indices = torch.randperm(inputs.size(0), device=inputs.device)[:sample_size]
     return inputs.index_select(dim=0, index=indices)
 
 
@@ -207,6 +210,7 @@ def build_transparent_block(
         rule_base=rule_base,
         n_concepts=config.n_concepts,
         concept_names=config.concept_names,
+        consequent_mode=config.consequent_mode,
     )
     return ConnectedFuzzyBlock(block=block, input_indices=config.input_indices)
 
@@ -215,6 +219,8 @@ def build_stage(config: StageConfig, sample_inputs: Tensor | None = None) -> Fuz
     return FuzzyStage(
         name=config.name,
         blocks=[build_transparent_block(block_config, sample_inputs=sample_inputs) for block_config in config.blocks],
+        enable_block_gates=config.enable_block_gates,
+        block_gate_init_logit=config.block_gate_init_logit,
     )
 
 

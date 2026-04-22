@@ -42,6 +42,7 @@ class BenchmarkEntryResult:
     family: str
     train_metrics: dict[str, float]
     test_metrics: dict[str, float]
+    classification_threshold: float | None = None
     structural_metrics: dict[str, float] = field(default_factory=dict)
     explainability_metrics: dict[str, float] = field(default_factory=dict)
     stability_artifacts: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -137,6 +138,7 @@ def _benchmark_sklearn_model(
             test_targets,
             classification_threshold=classification_threshold,
         ),
+        classification_threshold=float(classification_threshold) if task_type == "binary_classification" else None,
     )
 
 
@@ -388,6 +390,7 @@ def evaluate_trained_model(
             test_gold,
             classification_threshold=classification_threshold,
         ),
+        classification_threshold=float(classification_threshold) if task_type == "binary_classification" else None,
         structural_metrics=structural_metrics,
         explainability_metrics=explainability_metrics,
         stability_artifacts=stability_artifacts,
@@ -553,6 +556,9 @@ def run_tabular_benchmark(
                     family="ruanfis",
                     train_metrics=dict(training_result.train_metrics),
                     test_metrics=test_metrics,
+                    classification_threshold=(
+                        float(classification_threshold) if task_type == "binary_classification" else None
+                    ),
                     structural_metrics=dict(evaluated.structural_metrics),
                     explainability_metrics=dict(evaluated.explainability_metrics),
                     stability_artifacts=dict(evaluated.stability_artifacts),
@@ -727,6 +733,8 @@ def format_benchmark_results(results: Sequence[BenchmarkEntryResult], decimals: 
         lines.append(f"{result.model_name} [{result.family}]")
         lines.append("  train: " + _format_metric_line(result.train_metrics, decimals))
         lines.append("  test: " + _format_metric_line(result.test_metrics, decimals))
+        if result.classification_threshold is not None:
+            lines.append(f"  threshold: {result.classification_threshold:.2f}")
         if result.structural_metrics:
             lines.append("  structure: " + _format_metric_line(result.structural_metrics, decimals))
         if result.explainability_metrics:
@@ -779,6 +787,9 @@ def serialize_benchmark_results(results: Sequence[BenchmarkEntryResult]) -> tupl
             "family": result.family,
             "train_metrics": dict(result.train_metrics),
             "test_metrics": dict(result.test_metrics),
+            "classification_threshold": (
+                float(result.classification_threshold) if result.classification_threshold is not None else None
+            ),
             "structural_metrics": dict(result.structural_metrics),
             "explainability_metrics": dict(result.explainability_metrics),
             "stability_artifacts": {key: list(value) for key, value in result.stability_artifacts.items()},

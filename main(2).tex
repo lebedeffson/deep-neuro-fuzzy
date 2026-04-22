@@ -1,0 +1,359 @@
+\documentclass[runningheads]{llncs}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{makecell}
+\usepackage{float}
+\graphicspath{{docs/figures/}}
+
+\hypersetup{hidelinks}
+
+\begin{document}
+
+\title{Deep Fuzzy Feature Learning Based on ANFIS for Interpretable Intelligent Systems\thanks{The research was carried out within the state assignment of Ministry of Science and Higher Education of the Russian Federation (theme No. 124112200072-2).}}
+\titlerunning{Deep Fuzzy Feature Learning Based on ANFIS}
+
+\author{
+    A. N. Averkin\inst{1}\orcidID{0000-0003-1571-3583} \and
+    Yu. V. Trofimov\inst{2,3}\orcidID{0009-0005-6943-7432} \and
+    A. D. Lebedev\inst{2}\orcidID{0009-0001-1046-5982} \and
+    M. D. Lebedev\inst{4}\orcidID{0009-0005-1459-9119} \and
+    A. S. Ilin\inst{5}\orcidID{0009-0007-9599-4958} \and
+    A. V. Nechaevskiy\inst{2,3}\orcidID{0000-0001-6751-8195}
+}
+
+\authorrunning{A. N. Averkin et al.}
+
+\institute{
+    Federal Research Center ``Computer Science and Control'' of the Russian Academy of Sciences, Moscow, Russia
+    \and Dubna State University, Dubna, Moscow Region, Russia
+    \and Joint Institute for Nuclear Research, Dubna, Moscow Region, Russia\\
+    \email{ura\_trofim@bk.ru, nechav@uni-dubna.ru}
+    \and National University of Science and Technology MISIS, Moscow, Russian Federation
+    \and Innopolis University, Innopolis, Russian Federation
+}
+
+\maketitle
+
+\begin{abstract}
+This paper investigates how additional complexity can be introduced into neuro-fuzzy models while preserving structural interpretability of the internal inference process. We compare four architectures built on a shared neuro-fuzzy inference principle: a shallow model, a stacked model, a hierarchical model, and Deep Fuzzy Feature Learning (DFFL). The evaluation is conducted in a unified experimental framework and considers three complementary criteria: predictive performance, rule-base complexity, and the reproducibility of internal rule activation across independent runs. The results show that the stacked and hierarchical models provide the strongest overall predictive performance in terms of RMSE and F1, whereas DFFL yields a more reproducible internal rule structure among the deep variants, although at the cost of a larger rule base. We do not claim superior predictive performance of DFFL. Instead, the results support an architectural trade-off between predictive quality, structural cost, and internal rule-structure reproducibility.
+\keywords{deep fuzzy feature learning \and neuro-fuzzy systems \and interpretable machine learning \and fuzzy inference \and deep learning}
+\end{abstract}
+
+\section{Introduction}
+
+Deep models deliver strong predictive performance on problems with complex nonlinear structure, yet their internal logic often remains difficult to interpret~\cite{lecun2015deep}. In many applied settings, this is a substantial limitation rather than a minor inconvenience. When a model is used for engineering analysis, monitoring, or decision support, it is often necessary to understand not only the final prediction but also the internal reasoning path that produced it~\cite{rudin2019stop}. Under such conditions, interpretability becomes a structural requirement of the model itself.
+
+Neuro-fuzzy approaches remain relevant precisely because they combine data-driven learning with an explicit representation in terms of rules and membership functions~\cite{jang1993anfis,mitra2000neurofuzzy}. Within this family, ANFIS is one of the most influential reference models, as it links adaptive parameter learning with a readable inference scheme~\cite{jang1993anfis}. However, the classical ANFIS formulation is inherently shallow. As the dimensionality of the input grows and dependencies become more intricate, the rule base expands rapidly and becomes increasingly difficult to maintain in a structurally coherent form~\cite{mitra2000neurofuzzy,magdalena2019semantic}.
+
+The central challenge, therefore, is not merely to introduce greater complexity into a neuro-fuzzy architecture, but to do so without losing the semantic transparency of its internal representations. A straightforward stacked composition of fuzzy blocks may improve predictive performance, yet its intermediate states can quickly become technical latent transformations rather than interpretable concepts. Hierarchical constructions offer better control over rule growth, but they do not automatically guarantee semantically transparent intermediate representations. As a result, deeper neuro-fuzzy systems must be assessed not only in terms of expressive power, but also in terms of how they reshape the internal structure of inference.
+
+Under these conditions, evaluating a model solely by RMSE or F1 is no longer sufficient. It is equally important to ask whether the internal representation remains interpretable, how stable that representation is across independent runs, and what structural cost is required to preserve it~\cite{rudin2019stop,zeng2019deep,feng2020highly,alvarez2018self,koh2020concept,chen2019looks,chen2020concept}. This perspective motivates the comparative analysis developed in the present study.
+
+This perspective is also practically relevant in settings where a model is expected to support repeated expert inspection, rule-based auditing, or decision-support analysis. If the internal rule structure changes substantially across runs while predictive performance remains similar, the model may remain accurate but become less reliable as an interpretable analytical tool.
+
+The contribution of this study is intentionally narrow and testable:
+\begin{itemize}
+\item We define a unified comparison protocol for shallow, stacked, hierarchical, and DFFL architectures under matched data processing and optimization settings.
+\item We formulate DFFL as a concept-oriented decomposition where local fuzzy blocks feed aggregate concept blocks and a final decision layer, and we explicitly contrast this construction with hierarchical ANFIS.
+\item We evaluate models in a multi-criteria setting (predictive quality, rule-base complexity, and internal rule-activation reproducibility), not by predictive quality alone.
+\item We provide a case-level internal trace and a structural stability analysis showing that DFFL shifts the trade-off toward more reproducible internal rule structure, but does not dominate predictive quality.
+\end{itemize}
+Accordingly, we do not position DFFL as a universally best predictor; we position it as a concept-oriented architecture that shifts the quality--complexity--stability balance.
+
+\section{Related Work}
+
+Research in this area begins with classical neuro-fuzzy systems, most notably ANFIS, where learning is combined with an explicit fuzzy inference structure and therefore preserves a direct link between model parameters and interpretable rules~\cite{jang1993anfis}. Early surveys emphasized that the main strength of such models lies in their ability to represent and adapt symbolic knowledge within a data-driven framework, while also noting that this transparency becomes increasingly fragile as task complexity grows~\cite{mitra2000neurofuzzy}.
+
+One important response to this limitation was the development of hierarchical fuzzy systems. Their main motivation was to reduce the combinatorial growth of rules by decomposing the input space into smaller local subsystems~\cite{magdalena2019semantic,razak2022hierarchical}. This shift is important because it moves the discussion of interpretability from the level of individual rules to the level of architectural organization. However, even when hierarchical decomposition makes the overall structure more compact, preserving semantically clear intermediate representations remains a separate design challenge.
+
+A further step was the attempt to construct genuinely deep yet still interpretable rule-based models. In deep rule-based classifiers, multilayer processing is combined with low-order rules in order to preserve readability while increasing expressive power~\cite{zeng2019deep,feng2020highly}. These studies show that depth and rule-based reasoning are compatible in principle, but they also make clear that hidden layers do not automatically become interpretable simply because the model retains a rule-based form~\cite{feng2020highly}.
+
+In parallel, a broader line of work on architecturally interpretable deep learning has developed outside the neuro-fuzzy tradition. Self-explaining neural networks treat interpretability as an intrinsic property of the model rather than as an external explanation added after training~\cite{alvarez2018self}. Concept bottleneck models make intermediate variables explicit and force prediction to pass through human-readable concepts~\cite{koh2020concept}. Related ideas also appear in prototype-based networks and concept-oriented representation learning, where hidden spaces are aligned with representative examples or predefined semantic directions~\cite{chen2019looks,chen2020concept}.
+
+Taken together, these studies reflect a broader shift from post hoc explanation toward architectures in which interpretability is embedded into the model itself. This distinction is important because post hoc methods such as LIME and SHAP may help explain a trained predictor, but they do not ensure that its internal representation is structured in a stable and semantically meaningful way~\cite{ribeiro2016lime,lundberg2017shap,rudin2019stop}.
+
+A clear gap remains at the intersection of these lines of research. Neuro-fuzzy models preserve an explicit rule-based foundation, yet they often struggle to incorporate depth without a substantial increase in structural complexity. Architecturally interpretable deep models, in contrast, provide explicit concepts, prototypes, or self-explaining mechanisms, but do not rely on fuzzy inference as the core reasoning principle~\cite{zeng2019deep,alvarez2018self,koh2020concept,chen2019looks,chen2020concept}. The problem of designing a deep neuro-fuzzy architecture that remains structurally interpretable at its internal levels therefore remains open, and motivates the comparative analysis developed in this paper.
+
+\section{Methodology}
+
+All architectures considered in this study are built on a common neuro-fuzzy inference mechanism. They differ not in the basic form of the rule itself, but in the way fuzzy blocks are organized, how depth is introduced, and what role intermediate representations play in the final decision. Let $x \in \mathbb{R}^d$ denote the input vector and let $\hat{y}$ denote the model output. In the deep setting, the transformation is represented as a sequence of internal states,
+\[
+x \rightarrow c^{(1)} \rightarrow c^{(2)} \rightarrow \dots \rightarrow c^{(L)} \rightarrow \hat{y}.
+\]
+In this study, depth is treated as an architectural organization of intermediate representations rather than as a purely technical increase in the number of layers.
+
+Figure~\ref{fig:architectures_overview} summarizes the four model families considered in the paper: a shallow model, a stacked model, a hierarchical model, and DFFL. Although these architectures share a common inference principle, they differ substantially in the way internal states are formed and propagated.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{fig1_architectures.png}
+    \caption{Overview of the four model families considered in the study: shallow, stacked, hierarchical, and DFFL.}
+    \label{fig:architectures_overview}
+\end{figure}
+
+For a rule $r$ in a fuzzy block, the activation weight is defined as
+\[
+w_r = \sigma(g_r)\prod_{(i,j)\in A_r}\mu_{ij}(z_i),
+\]
+where $A_r$ denotes the antecedent structure of the rule, $\mu_{ij}(z_i)$ is the membership degree of the corresponding variable, and $\sigma(g_r)$ is a learnable rule gate. The gate is sample-independent and controls the global availability of rule $r$, while the product term is sample-dependent and encodes instance-specific antecedent matching. The activations are normalized as
+\[
+\bar{w}_r = \frac{w_r}{\sum_q w_q + \varepsilon},
+\]
+which keeps rule contributions comparable and numerically stable during training.
+
+The same normalized activations are used to form either hidden concept representations or the final output. In hidden layers, the concept representation may be written as
+\[
+c = \sum_r \bar{w}_r v_r,
+\]
+where $z\in \mathbb{R}^{m}$ is the block input, $c\in\mathbb{R}^{k}$ is the block output, and $v_r\in\mathbb{R}^{k}$ is the concept vector associated with rule $r$. In a more expressive variant, the hidden consequent is parameterized as
+\[
+c = \sum_r \bar{w}_r \sigma(zW_r + b_r).
+\]
+Here $W_r\in\mathbb{R}^{m\times k}$ and $b_r\in\mathbb{R}^{k}$.
+At the final stage, prediction is produced by a first-order Sugeno mapping,
+\[
+\hat{y} = \sum_r \bar{w}_r \left(a_{r0} + a_r^\top z\right),
+\]
+where $z$ denotes the representation at the last hidden level.
+
+The shallow model serves as the reference configuration. It uses a single fuzzy block over the full input space and a single decision layer. Its main advantage is local readability, since the rule base remains relatively easy to inspect. Its limitation is restricted representational depth.
+
+In the stacked model, depth is introduced through a sequential composition of fuzzy blocks. The output of one block becomes the input to the next. This design refines the representation step by step and often improves predictive performance, but the resulting intermediate states may become technical latent transformations rather than semantically stable concepts.
+
+In the hierarchical model, depth is introduced through decomposition rather than simple sequential stacking. Local groups of features are processed by separate fuzzy blocks, and their outputs are then aggregated at a higher level. This reduces the pressure on a single global rule base and provides a more controlled compromise between predictive performance and structural complexity. However, hierarchical organization alone does not guarantee semantically transparent intermediate states.
+
+DFFL differs from both designs by treating hidden levels as concept-oriented fuzzy representations rather than generic latent transformations. Local fuzzy blocks first construct concept-level states, which are then aggregated and refined before the final decision stage. In this architecture, depth is intended not only to increase expressive power, but also to preserve a traceable internal reasoning path from input features to the final prediction. A schematic representation of DFFL is shown in Fig.~\ref{fig:dffl_architecture}.
+
+The technical distinction between DFFL and hierarchical ANFIS is the explicit two-stage concept flow with a separate global aggregation and refinement stage before the decision layer. Hierarchical ANFIS decomposes input processing, but does not enforce this concept-flow constraint or the same staged re-estimation path.
+
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.92\textwidth}{\centering
+    Placeholder for the detailed DFFL architecture diagram (camera-ready figure to be inserted by authors).}}
+    \caption{Detailed architecture of DFFL with local concept blocks, aggregate concept layers, global refinement, and the final decision layer.}
+    \label{fig:dffl_architecture}
+\end{figure}
+
+Structural complexity is treated as an explicit architectural property rather than as a secondary implementation detail. In a flat global rule base, the number of candidate rules grows rapidly with input dimensionality. Local processing and restricted rule length reduce this growth and make it possible to analyze complexity as a measurable structural cost.
+
+Training is performed within a unified optimization framework, but DFFL is considered in two regimes. In the one-phase regime, all trainable components are optimized jointly after initialization. In the refined regime, training is staged: initialization is followed by concept-level pretraining, rule-base re-estimation in the updated representation space, and final fine-tuning. The purpose of this staged procedure is to stabilize the internal representation and make the hidden rule structure more reproducible across runs.
+
+The overall objective combines task performance with structural regularization,
+\[
+\mathcal{L} =
+\mathcal{L}_{\mathrm{task}}
++ \lambda_{\mathrm{s}}\mathcal{L}_{\mathrm{sparse}}
++ \lambda_{\mathrm{l}}\mathcal{L}_{\mathrm{len}}
++ \lambda_{\mathrm{ord}}\mathcal{L}_{\mathrm{order}}
++ \lambda_{\mathrm{ov}}\mathcal{L}_{\mathrm{overlap}}
++ \lambda_{\mathrm{c}}\mathcal{L}_{\mathrm{cover}}
++ \lambda_{\mathrm{ort}}\mathcal{L}_{\mathrm{orth}}
++ \lambda_{\mathrm{b}}\mathcal{L}_{\mathrm{bin}}
++ \lambda_{\mathrm{g}}\mathcal{L}_{\mathrm{gate}}.
+\]
+Here, $\mathcal{L}_{\mathrm{task}}$ corresponds to the predictive objective, while the remaining terms impose structural constraints related to sparsity, rule length, ordering, overlap control, coverage, concept separation, binarization, and gate usage. Under this formulation, interpretability is encouraged directly during learning rather than added as a post hoc explanation.
+
+\subsection{Algorithmic Outline of DFFL Training}
+
+The refined DFFL training procedure used in this study is:
+\begin{enumerate}
+\item Initialize local, aggregate, and decision blocks from data-driven prototypes and predefined rule budgets.
+\item Run stage-wise pretraining of concept blocks on the training split.
+\item Re-estimate rule candidates in the updated concept spaces and rebuild active block structures.
+\item Pretrain the decision layer on fixed concept features.
+\item Run joint fine-tuning of all trainable parameters with the unified objective and early stopping.
+\item For binary tasks, tune the final classification threshold on the validation split.
+\end{enumerate}
+This staged procedure is specific to DFFL in this paper; shallow, stacked, and hierarchical models are trained without concept-stage re-estimation.
+
+\subsection{Experimental Protocol}
+
+The empirical evaluation was designed to compare the considered architectures within a unified experimental framework. The benchmark includes tabular regression and binary classification tasks, with a main comparison block on smaller standard data sets and an extended comparison block on larger data sets.
+
+Reproducibility settings are fixed as follows: three seeds ($19,23,29$), test split $0.2$, validation split $0.2$ (from the original data), feature scaling by MinMax normalization to $[0,1]$, and target scaling to $[0,1]$ for regression tasks. The same seed-specific data split is used for all compared models.
+
+For regression tasks, predictive quality is assessed by the root mean squared error (RMSE). For binary classification, the main metric is the F1 score. Since the study is concerned not only with predictive accuracy but also with interpretable depth, the evaluation also includes structural and stability-oriented measures. In particular, we record the total number of rules, the number of active rules, and the Jaccard similarity of active-rule configurations across repeated runs.
+
+The comparison includes the four neuro-fuzzy architectures introduced above. To place their predictive performance in a broader context, we also include standard machine-learning baselines, including linear models, random forests, multilayer perceptrons, Extra Trees, and Histogram Gradient Boosting.
+
+For fuzzy models, the optimization budget is controlled by common defaults: pretraining epochs $18$, decision-pretraining epochs $14$, maximum epochs $80$, patience $20$, and batch size $64$. In binary tasks, the default classification threshold is $0.5$ and can be tuned on validation data in $[0.05,0.95]$.
+
+\subsection{Interpretability Protocol}
+
+In this paper, interpretability is operationalized as \textit{structural interpretability}. It is evaluated at two complementary levels. The first is global and concerns the stability of the internal rule structure across repeated runs. The second is local and concerns the decision path for an individual test object. Together, these two perspectives assess reproducibility and traceability of the internal reasoning process.
+
+At the global level, interpretability is analyzed through the Jaccard similarity of active rules and decision-layer rules across independent runs. For run $s$, a rule is considered active if $p_r^{(s)}\ge \tau_{\mathrm{act}}$, where $p_r^{(s)}$ is the learned rule probability and $\tau_{\mathrm{act}}=0.5$. If $R_a$ and $R_b$ are active-rule sets from two runs, then
+\[
+J(R_a,R_b)=\frac{|R_a\cap R_b|}{|R_a\cup R_b|}.
+\]
+These quantities show whether an architecture tends to recover a stable internal structure rather than a substantially different rule configuration at each training instance.
+
+At the local level, interpretability is examined through a case-level analysis of a single test object. The procedure follows a fixed sequence: input object, membership values, most active first-level rules, aggregated concept states, decision-layer rules, and final output. Figure~\ref{fig:case_explainability_flow} illustrates this logic.
+
+\begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.92\textwidth}{\centering
+    Placeholder for the case-level explainability flow diagram (camera-ready figure to be inserted by authors).}}
+    \caption{Case-level explainability flow in DFFL: from the input object through membership values and the most active first-level rules to aggregated concepts, decision rules, and the final output.}
+    \label{fig:case_explainability_flow}
+\end{figure}
+
+In the present study, the local analysis is demonstrated on a correctly classified example from the \textit{breast\_cancer} data set. For this object, DFFL produces a probability of 0.0028 for the positive class and a logit of $-5.8650$, which corresponds to the correct prediction of class~0. The first level of the architecture is dominated by a small number of strong local rules, showing that the input is processed through a compact set of salient antecedent patterns rather than through a diffuse set of weak activations. At the next level, these local signals are compressed into aggregate concept states, so that the decision path becomes progressively more structured and less redundant. By the time the model reaches the output layer, the final prediction is determined by a small group of dominant decision rules that together produce a strongly negative logit.
+
+The dominant rules involved in this example are summarized in Table~\ref{tab:case_rules}.
+
+\begin{table}[H]
+\centering
+\caption{Dominant rules in the case-level example for DFFL.}
+\label{tab:case_rules}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcll}
+\toprule
+Level & Rule & Weight & Role \\
+\midrule
+Stage 1 & \texttt{x1 IS mid AND x3 IS mid} & 0.7774 & dominant local signal \\
+Stage 1 & \texttt{x6 IS mid AND x7 IS mid} & 0.9987 & nearly complete block activation \\
+Stage 1 & \texttt{x20 IS mid AND x22 IS mid} & 0.9940 & stable local concept \\
+Stage 2 & \texttt{s1\_15 IS high AND s1\_17 IS low} & 0.7889 & main aggregate transition \\
+Stage 2 & \texttt{s1\_18 IS low AND s1\_19 IS high} & 0.8739 & dominant global state \\
+Decision & \texttt{s2\_0 IS low AND s2\_5 IS low} & 0.3554 & strongest negative contribution \\
+Decision & \texttt{s2\_0 IS low AND s2\_1 IS low} & 0.3111 & second strongest contribution \\
+Decision & \texttt{s2\_4 IS high AND s2\_5 IS low} & 0.0959 & complementary decision signal \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Taken together, the global stability analysis and the local case-level trace define a unified interpretability protocol for the compared models. The former shows whether an architecture tends to recover a reproducible internal rule structure across runs, while the latter shows whether this structure can be read as a coherent decision path for an individual object.
+
+\section{Results}
+
+The compared architectures differ across the three evaluation dimensions considered in this study: predictive quality, rule-base complexity, and internal rule stability. In the main comparison block, the stacked and hierarchical models achieve the strongest overall predictive results, while DFFL remains competitive but is not the leading variant in terms of task performance alone.
+The key numerical evidence is summarized in Table~\ref{tab:main_results}, Table~\ref{tab:extended_results}, and Table~\ref{tab:best_vs_baseline}, while the quality profile across tasks is shown in Fig.~\ref{fig:quality_main} and the quality--complexity--stability trade-off is shown in Fig.~\ref{fig:complexity_stability}.
+All values in Tables~\ref{tab:main_results}--\ref{tab:best_vs_baseline} are means across three seeds; per-seed values are provided in the supplementary artifacts.
+
+\begin{table}[H]
+\centering
+\caption{Summary results of the compared architectures in the main comparison block (mean over three seeds).}
+\label{tab:main_results}
+\small
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{lllcccc}
+\toprule
+Model & Avg. rules & Mean active- & Diabetes & Linnerud weight & Breast cancer & Wine binary\\
+ &  & rule Jaccard & RMSE & RMSE & F1 & F1 \\
+\midrule
+shallow model      & 36    & 0.2673 & 0.1944 & 0.3693 & 0.9747 & 0.9432 \\
+stacked model      & 50    & 0.1415 & 0.2100 & 0.3166 & 0.9795 & 0.9444 \\
+hierarchical model & 74.8  & 0.1449 & 0.2000 & 0.2949 & 0.9746 & 0.9577 \\
+DFFL               & 96.73 & 0.2626 & 0.1973 & 0.3170 & 0.9472 & 0.9552 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{fig2_quality_by_dataset.png}
+    \caption{Predictive quality of the compared models in the main comparison block.}
+    \label{fig:quality_main}
+\end{figure}
+
+The same pattern is observed in the extended comparison: the stacked and hierarchical architectures remain the strongest predictive variants, whereas DFFL does not become the quality leader on the larger data sets.
+
+\begin{table}[H]
+\centering
+\caption{Summary results of the compared architectures in the extended comparison (mean over three seeds).}
+\label{tab:extended_results}
+\small
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{lcccc}
+\toprule
+Model & Avg. rules & Mean active- & California housing & Covtype binary \\
+ &  & rule Jaccard & RMSE & F1 \\
+\midrule
+shallow model      & 36  & 0.5432 & 0.1606 & 0.7101 \\
+stacked model      & 50  & 0.2131 & 0.1122 & 0.8129 \\
+hierarchical model & 90  & 0.2561 & 0.1170 & 0.8117 \\
+DFFL               & 113 & 0.4214 & 0.1337 & 0.7518 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A different pattern emerges when the analysis shifts from predictive quality to internal rule stability. In both comparison blocks, DFFL yields higher active-rule Jaccard values than the stacked and hierarchical models, indicating a more reproducible internal rule configuration across repeated runs.
+
+The comparison with external baselines is included only to contextualize raw predictive performance. The main contribution of this study is the comparative analysis of neuro-fuzzy architectures in terms of predictive quality, rule-base complexity, and internal rule stability.
+
+\begin{table}[H]
+\centering
+\caption{Neuro-fuzzy results in the context of standard ML baselines (mean over three seeds)}
+\label{tab:best_vs_baseline}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lclclc}
+\toprule
+Dataset & Metric & Best neuro-fuzzy model & Value & Best baseline & Value \\
+\midrule
+diabetes               & RMSE & shallow model      & 0.1944 & linear regression                 & 0.1779 \\
+linnerud\_weight       & RMSE & hierarchical model & 0.2949 & random forest         & 0.3374 \\
+breast\_cancer         & F1   & stacked model      & 0.9795 & mlp classifier                   & 0.9886 \\
+wine\_binary           & F1   & hierarchical model & 0.9577 & mlp classifier                   & 1.0000 \\
+digits\_binary         & F1   & stacked model      & 1.0000 & mlp classifier                   & 1.0000 \\
+california\_housing    & RMSE & stacked model      & 0.1122 & hist gradient boosting & 0.0972 \\
+covtype\_binary        & F1   & stacked model      & 0.8129 & extra trees          & 0.8546 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{fig4_complexity_stability.png}
+    \caption{Quality--complexity--stability trade-off across compared model families.}
+    \label{fig:complexity_stability}
+\end{figure}
+
+Overall, the results point to a trade-off rather than a single best architecture. The stacked and hierarchical models provide the strongest predictive profile, whereas DFFL is distinguished by greater internal rule stability, achieved with a larger rule base.
+
+The ablation of the DFFL training profiles leads to the same general conclusion. The baseline profile provides moderate stability with a smaller rule base, the quality-balanced profile is weaker overall, and the quality-auto profile yields the strongest stability signal at the cost of the largest rule budget.
+
+\section{Discussion}
+
+The empirical comparison suggests that alternative forms of depth in neuro-fuzzy systems favor different objectives. Sequential and hierarchical organizations are more effective when predictive performance is prioritized, especially in the extended comparison. By contrast, DFFL is more effective at preserving a reproducible internal rule structure across repeated runs.
+
+This distinction matters because the contribution of deep neuro-fuzzy models cannot be assessed solely in terms of RMSE or F1. If interpretability is treated as a property of the internal reasoning process rather than as a post hoc explanation, then reproducibility of the rule structure becomes a relevant criterion alongside predictive quality.
+
+At the same time, the gain provided by DFFL is not cost-free. In the current experiments, improved stability is associated with a larger rule base and weaker predictive results than those of the strongest stacked and hierarchical variants. The present evidence therefore supports a differentiated view: concept-oriented depth improves internal consistency, but not overall efficiency under the current configuration.
+
+One practical reason for this trade-off is the early local decomposition used in DFFL. Local blocks reduce combinatorial rule growth, but they also introduce an early bottleneck: upper layers no longer operate on the full original feature space, only on locally aggregated representations. This can limit recovery of complex cross-feature interactions and helps explain why DFFL can be more structurally stable while still lagging behind stacked/hierarchical variants in predictive quality.
+
+The comparison with external baselines further clarifies the practical significance of the study. Standard machine-learning models often remain stronger in raw predictive terms. The value of the compared neuro-fuzzy architectures lies instead in showing how different architectural forms of depth reshape the balance between performance, structural cost, and interpretability-oriented stability.
+
+\section{Limitations}
+
+The study is limited to tabular tasks and to the benchmark used in the experiments. This setting is well suited to neuro-fuzzy analysis because it allows the internal rule structure and intermediate representations to be examined directly. At the same time, it does not cover all data regimes in which deep interpretable models may be applied. The conclusions should therefore be understood within the scope of structured tabular prediction rather than as general claims about deep neuro-fuzzy learning.
+
+A second limitation concerns the notion of interpretability adopted in the paper. The analysis focuses primarily on structural interpretability, including rule-base size, reproducibility of internal rule activation, and the possibility of tracing the decision path for an individual object. These criteria are useful for assessing whether internal reasoning remains stable and readable, but they do not replace external expert validation of the learned concepts at the domain level.
+
+An additional limitation is associated with the current profile of DFFL. In the reported experiments, this model achieves higher internal stability at the cost of a larger rule base and weaker predictive performance than the strongest stacked and hierarchical variants. The results should therefore not be interpreted as evidence that concept-oriented depth is already fully optimized. Rather, they show that the present implementation still leaves room for improvement in structural efficiency and training strategy.
+
+Finally, the statistical basis of the comparison remains moderate in scale. The repeated-run design is sufficient to reveal stable differences in architectural behavior, but it is still limited as a basis for stronger general claims. A broader study with additional runs, more diverse data sets, and a more extensive significance analysis would provide a firmer basis for generalization.
+
+\section{Conclusion}
+
+This paper examined how additional complexity can be introduced into neuro-fuzzy models while preserving structural interpretability of the internal reasoning process. The comparison between the shallow, stacked, hierarchical, and DFFL architectures shows that different forms of depth lead to different balances between predictive quality, structural complexity, and internal rule stability.
+
+The results do not identify a universally best architecture. We do not claim superior predictive performance of DFFL. Instead, the evidence shows that stacked and hierarchical designs are stronger in predictive terms, whereas DFFL offers a more reproducible internal rule structure at a higher structural cost.
+
+These findings suggest that the selection of a deep neuro-fuzzy architecture should be treated as an architectural trade-off in which predictive accuracy, rule-base size, and the stability of interpretable internal representations must be considered jointly.
+
+Future work should focus on improving the structural efficiency of concept-oriented deep fuzzy architectures, extending the analysis to a broader range of data settings, and strengthening the validation of hidden concepts beyond structural stability alone.
+
+\bibliographystyle{splncs04}
+\bibliography{docs/iiti26_references_skeleton_en}
+
+\end{document}

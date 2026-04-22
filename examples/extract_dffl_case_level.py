@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import re
 from pathlib import Path
 
 import torch
+from sklearn.datasets import (
+    fetch_california_housing,
+    load_breast_cancer,
+    load_diabetes,
+    load_digits,
+    load_linnerud,
+    load_wine,
+)
 
 from run_real_datasets_benchmark import (
     DATASETS,
@@ -18,6 +27,7 @@ from run_real_datasets_benchmark import (
     build_bootstrapped_hierarchical_model,
     build_dffl_config,
     build_refined_hierarchical_model,
+    make_dffl_bridge_pairs,
     make_dffl_input_groups,
     prepare_dataset_split,
     resolve_dffl_profile,
@@ -53,6 +63,157 @@ def _format_memberships(variable_trace, sample_index: int, top_terms: int = 2) -
         term = variable_trace.term_names[idx]
         parts.append(f"{term}={value:.4f}")
     return ", ".join(parts)
+
+
+_X_RE = re.compile(r"^x(\d+)$")
+_S1_FLAT_RE = re.compile(r"^s1_(\d+)$")
+_S2_FLAT_RE = re.compile(r"^s2_(\d+)$")
+
+
+def _covtype_feature_names() -> list[str]:
+    names = [
+        "Elevation",
+        "Aspect",
+        "Slope",
+        "Horizontal_Distance_To_Hydrology",
+        "Vertical_Distance_To_Hydrology",
+        "Horizontal_Distance_To_Roadways",
+        "Hillshade_9am",
+        "Hillshade_Noon",
+        "Hillshade_3pm",
+        "Horizontal_Distance_To_Fire_Points",
+    ]
+    names.extend([f"Wilderness_Area_{i}" for i in range(1, 5)])
+    names.extend([f"Soil_Type_{i}" for i in range(1, 41)])
+    return names
+
+
+def _dataset_feature_names(dataset_name: str, input_dim: int) -> list[str]:
+    try:
+        if dataset_name == "breast_cancer":
+            names = list(load_breast_cancer().feature_names)
+        elif dataset_name == "diabetes":
+            names = list(load_diabetes().feature_names)
+        elif dataset_name == "wine_binary":
+            names = list(load_wine().feature_names)
+        elif dataset_name == "digits_binary":
+            data = load_digits()
+            names = list(getattr(data, "feature_names", [])) or [f"pixel_{i}" for i in range(data.data.shape[1])]
+        elif dataset_name == "california_housing":
+            names = list(fetch_california_housing().feature_names)
+        elif dataset_name in {"covtype_binary_20000", "covtype_binary_8000"}:
+            names = _covtype_feature_names()
+        elif dataset_name == "linnerud_weight":
+            names = list(load_linnerud().feature_names)
+        else:
+            names = []
+    except Exception:
+        names = []
+
+    if len(names) < input_dim:
+        names.extend([f"feature_{i}" for i in range(len(names), input_dim)])
+    return names[:input_dim]
+
+
+def _feature_label(var_name: str, feature_names: list[str]) -> str:
+    match = _X_RE.match(var_name)
+    if not match:
+        return var_name
+    index = int(match.group(1))
+    if 0 <= index < len(feature_names):
+        return f"{feature_names[index]} [x{index}]"
+    return f"feature_{index} [x{index}]"
+
+
+def _build_concept_mapping(case_trace, feature_names: list[str]) -> tuple[dict[str, dict], list[dict], list[dict]]:
+    concept_lookup: dict[str, dict] = {}
+    s1_rows: list[dict] = []
+    s2_rows: list[dict] = []
+    stage1_block_features: dict[str, list[str]] = {}
+
+    if len(case_trace.stage_traces) < 1:
+        return concept_lookup, s1_rows, s2_rows
+
+    stage1_trace = case_trace.stage_traces[0]
+    s1_flat_index = 0
+    for block_trace in stage1_trace.block_traces:
+        feature_labels = [_feature_label(v.variable_name, feature_names) for v in block_trace.variable_traces]
+        stage1_block_features[block_trace.block_name] = feature_labels
+        for canonical_name in block_trace.output_names:
+            flat_name = f"s1_{s1_flat_index}"
+            row = {
+                "flat_name": flat_name,
+                "canonical_name": canonical_name,
+                "block_name": block_trace.block_name,
+                "source_features": tuple(feature_labels),
+            }
+            s1_rows.append(row)
+            concept_lookup[flat_name] = row
+            concept_lookup[canonical_name] = row
+            s1_flat_index += 1
+
+    if len(case_trace.stage_traces) < 2:
+        return concept_lookup, s1_rows, s2_rows
+
+    stage2_trace = case_trace.stage_traces[1]
+    s2_flat_index = 0
+    for block_trace in stage2_trace.block_traces:
+        upstream_blocks: list[str] = []
+        for variable_trace in block_trace.variable_traces:
+            token = variable_trace.variable_name
+            if token in concept_lookup and token.startswith("s1_"):
+                block_name = concept_lookup[token]["block_name"]
+                if block_name not in upstream_blocks:
+                    upstream_blocks.append(block_name)
+
+        group_descriptions = []
+        for block_name in upstream_blocks:
+            features = stage1_block_features.get(block_name, [])
+            group_descriptions.append(f"{block_name}: {', '.join(features)}")
+
+        for canonical_name in block_trace.output_names:
+            flat_name = f"s2_{s2_flat_index}"
+            row = {
+                "flat_name": flat_name,
+                "canonical_name": canonical_name,
+                "block_name": block_trace.block_name,
+                "upstream_blocks": tuple(upstream_blocks),
+                "upstream_groups": tuple(group_descriptions),
+            }
+            s2_rows.append(row)
+            concept_lookup[flat_name] = row
+            concept_lookup[canonical_name] = row
+            s2_flat_index += 1
+
+    return concept_lookup, s1_rows, s2_rows
+
+
+def _humanize_variable_name(var_name: str, feature_names: list[str], concept_lookup: dict[str, dict]) -> str:
+    if _X_RE.match(var_name):
+        return _feature_label(var_name, feature_names)
+
+    if _S1_FLAT_RE.match(var_name) and var_name in concept_lookup:
+        row = concept_lookup[var_name]
+        return f"{var_name} ({row['canonical_name']} <- {row['block_name']})"
+
+    if _S2_FLAT_RE.match(var_name) and var_name in concept_lookup:
+        row = concept_lookup[var_name]
+        return f"{var_name} ({row['canonical_name']} <- {row['block_name']})"
+
+    return var_name
+
+
+def _humanize_rule_text(rule_text: str, feature_names: list[str], concept_lookup: dict[str, dict]) -> str:
+    chunks = rule_text.split(" AND ")
+    normalized: list[str] = []
+    for chunk in chunks:
+        if " IS " not in chunk:
+            normalized.append(chunk)
+            continue
+        variable_name, term_name = chunk.split(" IS ", maxsplit=1)
+        pretty_name = _humanize_variable_name(variable_name.strip(), feature_names, concept_lookup)
+        normalized.append(f"{pretty_name} IS {term_name.strip()}")
+    return " AND ".join(normalized)
 
 
 def main() -> None:
@@ -103,12 +264,19 @@ def main() -> None:
         input_dim=split.input_dim,
     )
     groups = make_dffl_input_groups(profile, train_inputs=train_inputs, train_targets=train_targets)
+    bridge_pairs = make_dffl_bridge_pairs(
+        profile,
+        train_inputs=train_inputs,
+        train_targets=train_targets,
+        input_groups=groups,
+    )
     binary_feature_indices = _detect_binary_feature_indices(train_inputs)
     config = build_dffl_config(
         split.input_dim,
         profile=profile,
         input_groups=groups,
         binary_feature_indices=binary_feature_indices,
+        bridge_feature_pairs=bridge_pairs,
     )
 
     bootstrap = BootstrapConfig(decision_task_type=spec.task_type)
@@ -194,6 +362,8 @@ def main() -> None:
     case_logit = float(case_logits[0, 0].detach().cpu().item())
     case_prob = float(torch.sigmoid(case_logits[0, 0]).detach().cpu().item())
     case_pred = 1.0 if case_prob >= tuned_threshold else 0.0
+    feature_names = _dataset_feature_names(args.dataset, split.input_dim)
+    concept_lookup, s1_rows, s2_rows = _build_concept_mapping(case_trace, feature_names)
 
     lines: list[str] = []
     lines.append("# Case-level explainability for DFFL")
@@ -210,6 +380,23 @@ def main() -> None:
     lines.append(f"- p_hat: `{case_prob:.4f}`")
     lines.append(f"- logit: `{case_logit:.4f}`")
     lines.append("")
+    lines.append("## Concept index mapping")
+    lines.append("")
+    lines.append("### s1_* -> stage-1 concepts and original feature groups")
+    for row in s1_rows:
+        lines.append(
+            f"- `{row['flat_name']}` -> `{row['canonical_name']}` | block=`{row['block_name']}` | "
+            f"features: {', '.join(row['source_features'])}"
+        )
+    lines.append("")
+    lines.append("### s2_* -> stage-2 concepts and upstream groups")
+    for row in s2_rows:
+        upstream = "; ".join(row["upstream_groups"]) if row["upstream_groups"] else "-"
+        lines.append(
+            f"- `{row['flat_name']}` -> `{row['canonical_name']}` | block=`{row['block_name']}` | "
+            f"upstream groups: {upstream}"
+        )
+    lines.append("")
 
     for stage_idx, stage_trace in enumerate(case_trace.stage_traces, start=1):
         lines.append(f"## Stage {stage_idx}: `{stage_trace.stage_name}`")
@@ -220,14 +407,16 @@ def main() -> None:
             lines.append("Membership peaks (top terms):")
             for variable_trace in block_trace.variable_traces:
                 peak = _format_memberships(variable_trace, sample_index=0, top_terms=2)
-                lines.append(f"- `{variable_trace.variable_name}`: {peak}")
+                variable_name = _humanize_variable_name(variable_trace.variable_name, feature_names, concept_lookup)
+                lines.append(f"- `{variable_name}`: {peak}")
             lines.append("")
             lines.append(f"Top-{args.top_k_rules} rules by normalized weight:")
             weights = block_trace.normalized_rule_weights[0]
             top_vals, top_idx = weights.topk(k=min(args.top_k_rules, weights.numel()))
             for rank, (value, idx) in enumerate(zip(top_vals.tolist(), top_idx.tolist(), strict=True), start=1):
                 rule_name = block_trace.rule_names[idx]
-                rule_text = model.stages[stage_idx - 1].blocks[block_idx].block.describe_rule(idx)
+                raw_rule_text = model.stages[stage_idx - 1].blocks[block_idx].block.describe_rule(idx)
+                rule_text = _humanize_rule_text(raw_rule_text, feature_names, concept_lookup)
                 lines.append(f"{rank}. `{rule_name}` | `{rule_text}` | w={value:.4f}")
             lines.append("")
 
@@ -239,7 +428,8 @@ def main() -> None:
     lines.append(f"Top-{args.top_k_rules} decision rules:")
     for rank, (value, idx) in enumerate(zip(dvals.tolist(), didx.tolist(), strict=True), start=1):
         rule_name = dtrace.rule_names[idx]
-        rule_text = model.decision_layer.describe_rule(idx)
+        raw_rule_text = model.decision_layer.describe_rule(idx)
+        rule_text = _humanize_rule_text(raw_rule_text, feature_names, concept_lookup)
         contribution = dtrace.rule_outputs[0, idx, 0].item() * value
         lines.append(f"{rank}. `{rule_name}` | `{rule_text}` | w={value:.4f} | contrib={contribution:.4f}")
     lines.append("")

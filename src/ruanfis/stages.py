@@ -6,7 +6,7 @@ import torch
 from torch import Tensor, nn
 
 from .blocks import BaseFuzzyRuleLayer
-from .traces import StageTrace
+from .traces import BlockTrace, StageTrace
 
 
 class ConnectedFuzzyBlock(nn.Module):
@@ -50,16 +50,35 @@ class ConnectedFuzzyBlock(nn.Module):
 
 
 class FuzzyStage(nn.Module):
-    def __init__(self, name: str, blocks: Sequence[ConnectedFuzzyBlock]) -> None:
+    def __init__(
+        self,
+        name: str,
+        blocks: Sequence[ConnectedFuzzyBlock],
+        *,
+        enable_block_gates: bool = False,
+        block_gate_init_logit: float = 5.0,
+    ) -> None:
         super().__init__()
         if not blocks:
             raise ValueError("A fuzzy stage must contain at least one connected block.")
         self.name = name
         self.blocks = nn.ModuleList(blocks)
+        self.enable_block_gates = bool(enable_block_gates)
+        if self.enable_block_gates:
+            self.block_gate_logits = nn.Parameter(
+                torch.full((len(blocks),), float(block_gate_init_logit), dtype=torch.float32)
+            )
+        else:
+            self.block_gate_logits = None
 
     @property
     def output_dim(self) -> int:
         return sum(block.output_dim for block in self.blocks)
+
+    def _block_gate(self, block_index: int, inputs: Tensor) -> Tensor:
+        if self.block_gate_logits is None:
+            return torch.ones((), device=inputs.device, dtype=inputs.dtype)
+        return torch.sigmoid(self.block_gate_logits[block_index]).to(device=inputs.device, dtype=inputs.dtype)
 
     def validate_input_dim(self, input_dim: int) -> None:
         if input_dim <= 0:
@@ -72,7 +91,11 @@ class FuzzyStage(nn.Module):
                 )
 
     def forward(self, inputs: Tensor, top_k_rules: int | None = None) -> Tensor:
-        outputs = [block(inputs, top_k_rules=top_k_rules) for block in self.blocks]
+        outputs = []
+        for block_index, block in enumerate(self.blocks):
+            block_outputs = block(inputs, top_k_rules=top_k_rules)
+            gate = self._block_gate(block_index, block_outputs)
+            outputs.append(block_outputs * gate)
         return torch.cat(outputs, dim=1)
 
     def forward_with_trace(
@@ -82,10 +105,24 @@ class FuzzyStage(nn.Module):
     ) -> tuple[Tensor, StageTrace]:
         outputs = []
         traces = []
-        for block in self.blocks:
+        for block_index, block in enumerate(self.blocks):
             block_outputs, block_trace = block.forward_with_trace(inputs, top_k_rules=top_k_rules)
-            outputs.append(block_outputs)
-            traces.append(block_trace)
+            gate = self._block_gate(block_index, block_outputs)
+            gated_outputs = block_outputs * gate
+            outputs.append(gated_outputs)
+            traces.append(
+                BlockTrace(
+                    block_name=block_trace.block_name,
+                    inputs=block_trace.inputs,
+                    variable_traces=block_trace.variable_traces,
+                    rule_names=block_trace.rule_names,
+                    raw_rule_weights=block_trace.raw_rule_weights,
+                    normalized_rule_weights=block_trace.normalized_rule_weights,
+                    rule_outputs=block_trace.rule_outputs,
+                    outputs=gated_outputs.detach(),
+                    output_names=block_trace.output_names,
+                )
+            )
         stage_outputs = torch.cat(outputs, dim=1)
         trace = StageTrace(
             stage_name=self.name,

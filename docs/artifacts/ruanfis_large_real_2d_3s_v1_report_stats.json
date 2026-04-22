@@ -1,0 +1,288 @@
+{
+  "generated_utc": "2026-04-21T22:55:09Z",
+  "source_report": "docs/artifacts/ruanfis_large_real_2d_3s_v1_report.json",
+  "model_family_filter": "ruanfis",
+  "selected_models": [
+    "ruanfis_hierarchical_anfis",
+    "ruanfis_refined_deep",
+    "ruanfis_shallow",
+    "ruanfis_stacked_anfis"
+  ],
+  "confidence": 0.95,
+  "alpha": 0.05,
+  "n_permutations": 3000,
+  "bootstrap_samples": 1000,
+  "random_seed": 42,
+  "dataset_level": {
+    "n_blocks": 2,
+    "n_datasets": 2,
+    "n_models": 4,
+    "datasets": [
+      "california_housing",
+      "covtype_binary_20000"
+    ],
+    "block_metric_map": {
+      "california_housing": "rmse",
+      "covtype_binary_20000": "f1"
+    },
+    "friedman": {
+      "chi2": 6.0,
+      "p_value": 0.038320559813395536,
+      "alpha": 0.05,
+      "reject_h0_alpha": true,
+      "p_value_method": "permutation(3000)"
+    },
+    "rank_summary": [
+      {
+        "model": "ruanfis_stacked_anfis",
+        "avg_rank": 1.0,
+        "std_rank": 0.0,
+        "ci_low": 1.0,
+        "ci_high": 1.0,
+        "wins": 2
+      },
+      {
+        "model": "ruanfis_hierarchical_anfis",
+        "avg_rank": 2.0,
+        "std_rank": 0.0,
+        "ci_low": 2.0,
+        "ci_high": 2.0,
+        "wins": 0
+      },
+      {
+        "model": "ruanfis_refined_deep",
+        "avg_rank": 3.0,
+        "std_rank": 0.0,
+        "ci_low": 3.0,
+        "ci_high": 3.0,
+        "wins": 0
+      },
+      {
+        "model": "ruanfis_shallow",
+        "avg_rank": 4.0,
+        "std_rank": 0.0,
+        "ci_low": 4.0,
+        "ci_high": 4.0,
+        "wins": 0
+      }
+    ],
+    "pairwise_wilcoxon_holm": [
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_refined_deep",
+        "n_blocks": 2,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.5,
+        "n_nonzero_pairs": 2,
+        "mean_rank_a": 2.0,
+        "mean_rank_b": 3.0,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 2,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.5,
+        "n_nonzero_pairs": 2,
+        "mean_rank_a": 2.0,
+        "mean_rank_b": 4.0,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 2,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.5,
+        "n_nonzero_pairs": 2,
+        "mean_rank_a": 2.0,
+        "mean_rank_b": 1.0,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 2,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.5,
+        "n_nonzero_pairs": 2,
+        "mean_rank_a": 3.0,
+        "mean_rank_b": 4.0,
+        "better_model_by_avg_rank": "ruanfis_refined_deep",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 2,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.5,
+        "n_nonzero_pairs": 2,
+        "mean_rank_a": 3.0,
+        "mean_rank_b": 1.0,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_shallow",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 2,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.5,
+        "n_nonzero_pairs": 2,
+        "mean_rank_a": 4.0,
+        "mean_rank_b": 1.0,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      }
+    ]
+  },
+  "block_level": {
+    "n_blocks": 6,
+    "n_datasets": 2,
+    "n_models": 4,
+    "datasets": [
+      "california_housing",
+      "covtype_binary_20000"
+    ],
+    "block_metric_map": {
+      "california_housing/seed=19": "rmse",
+      "california_housing/seed=23": "rmse",
+      "california_housing/seed=29": "rmse",
+      "covtype_binary_20000/seed=19": "f1",
+      "covtype_binary_20000/seed=23": "f1",
+      "covtype_binary_20000/seed=29": "f1"
+    },
+    "friedman": {
+      "chi2": 17.0,
+      "p_value": 0.0003332222592469177,
+      "alpha": 0.05,
+      "reject_h0_alpha": true,
+      "p_value_method": "permutation(3000)"
+    },
+    "rank_summary": [
+      {
+        "model": "ruanfis_stacked_anfis",
+        "avg_rank": 1.1666666666666667,
+        "std_rank": 0.408248290463863,
+        "ci_low": 1.0,
+        "ci_high": 1.5,
+        "wins": 5
+      },
+      {
+        "model": "ruanfis_hierarchical_anfis",
+        "avg_rank": 1.8333333333333333,
+        "std_rank": 0.408248290463863,
+        "ci_low": 1.5,
+        "ci_high": 2.0,
+        "wins": 1
+      },
+      {
+        "model": "ruanfis_refined_deep",
+        "avg_rank": 3.0,
+        "std_rank": 0.0,
+        "ci_low": 3.0,
+        "ci_high": 3.0,
+        "wins": 0
+      },
+      {
+        "model": "ruanfis_shallow",
+        "avg_rank": 4.0,
+        "std_rank": 0.0,
+        "ci_low": 4.0,
+        "ci_high": 4.0,
+        "wins": 0
+      }
+    ],
+    "pairwise_wilcoxon_holm": [
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_refined_deep",
+        "n_blocks": 6,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.03125,
+        "n_nonzero_pairs": 6,
+        "mean_rank_a": 1.8333333333333333,
+        "mean_rank_b": 3.0,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 0.1875,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 6,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.03125,
+        "n_nonzero_pairs": 6,
+        "mean_rank_a": 1.8333333333333333,
+        "mean_rank_b": 4.0,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 0.1875,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 6,
+        "wilcoxon_stat": 3.5,
+        "p_value": 0.21875,
+        "n_nonzero_pairs": 6,
+        "mean_rank_a": 1.8333333333333333,
+        "mean_rank_b": 1.1666666666666667,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 0.21875,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 6,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.03125,
+        "n_nonzero_pairs": 6,
+        "mean_rank_a": 3.0,
+        "mean_rank_b": 4.0,
+        "better_model_by_avg_rank": "ruanfis_refined_deep",
+        "p_value_holm": 0.1875,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 6,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.03125,
+        "n_nonzero_pairs": 6,
+        "mean_rank_a": 3.0,
+        "mean_rank_b": 1.1666666666666667,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 0.1875,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_shallow",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 6,
+        "wilcoxon_stat": 0.0,
+        "p_value": 0.03125,
+        "n_nonzero_pairs": 6,
+        "mean_rank_a": 4.0,
+        "mean_rank_b": 1.1666666666666667,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 0.1875,
+        "reject_h0_alpha": false
+      }
+    ]
+  }
+}

@@ -6,7 +6,7 @@ import json
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -41,6 +41,7 @@ from ruanfis import (  # noqa: E402
     TrainingConfig,
     TransparentBlockConfig,
     build_bootstrapped_shallow_model,
+    build_bootstrapped_hierarchical_model,
     build_hierarchical_anfis_model,
     build_refined_hierarchical_model,
     build_stacked_anfis_model,
@@ -92,7 +93,10 @@ class DfflProfile:
     decision_rule_generation_mode: str
     aggregate_block_count: int = 1
     aggregate_overlap: int = 0
+    aggregate_global_context_dim: int = 0
+    aggregate_global_max_rules: int = 0
     local_max_rule_arity: int = 2
+    aggregate_max_rule_arity: int = 2
     decision_max_rule_arity: int = 2
     decision_three_terms: bool = False
     learning_rate_scale_regression: float = 1.0
@@ -115,6 +119,29 @@ class DfflProfile:
     local_prototype_sample_size: int | None = 256
     aggregate_prototype_sample_size: int | None = 256
     decision_prototype_sample_size: int | None = 256
+    binary_auto_pos_weight: bool = False
+    binary_soft_f1_weight: float = 0.0
+    weight_decay: float = 0.0
+    gradient_clip_norm: float | None = None
+    rule_sparsity_weight: float = 0.0
+    rule_length_weight: float = 0.0
+    decision_usage_balance_weight: float = 0.0
+    block_gates_enabled: bool = False
+    block_gate_init_logit: float = 5.0
+    block_gate_l1_weight: float = 0.0
+    local_consequent_mode: str = "constant"
+    aggregate_consequent_mode: str = "constant"
+    bridge_enabled: bool = False
+    bridge_top_pairs: int = 0
+    bridge_pair_score_alpha: float = 0.5
+    bridge_concepts: int = 1
+    bridge_max_rules: int = 6
+    bridge_max_rule_arity: int = 2
+    bridge_rule_generation_mode: str = "prototype"
+    bridge_prototype_term_limit: int = 2
+    bridge_prototype_scoring_mode: str = "max"
+    bridge_prototype_variable_pool_size: int | None = None
+    bridge_prototype_sample_size: int | None = 256
 
 
 def set_seed(seed: int) -> None:
@@ -182,6 +209,13 @@ def var2(name: str) -> FuzzyVariable:
     return FuzzyVariable(
         name,
         GaussianMembership([0.3, 0.7], [0.22, 0.22], term_names=["low", "high"]),
+    )
+
+
+def var_binary(name: str) -> FuzzyVariable:
+    return FuzzyVariable(
+        name,
+        GaussianMembership([0.05, 0.95], [0.12, 0.12], term_names=["off", "on"]),
     )
 
 
@@ -305,12 +339,16 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_concepts=3,
         local_max_rules=14,
         aggregate_max_rules=20,
-        decision_max_rules=14,
+        decision_max_rules=16,
         stage2_width_min=4,
         stage2_width_max=9,
         local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
+        aggregate_max_rule_arity=2,
+        aggregate_global_context_dim=2,
+        aggregate_global_max_rules=8,
+        decision_three_terms=True,
         learning_rate_scale_regression=1.0,
         learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
@@ -323,6 +361,12 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_prototype_sample_size=512,
         aggregate_prototype_sample_size=512,
         decision_prototype_sample_size=512,
+        bridge_enabled=True,
+        bridge_top_pairs=4,
+        bridge_pair_score_alpha=0.5,
+        bridge_concepts=1,
+        bridge_max_rules=6,
+        bridge_prototype_term_limit=2,
     ),
     "quality_balanced": DfflProfile(
         name="quality_balanced",
@@ -335,6 +379,7 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
+        aggregate_max_rule_arity=2,
         learning_rate_scale_regression=1.0,
         learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
@@ -351,11 +396,16 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
+        aggregate_max_rule_arity=2,
         # Keep architecture compact, but raise effective LR for tiny regression tasks.
         learning_rate_scale_regression=1.3333333333333333,
         learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
         local_prototype_term_limit=3,
+        bridge_enabled=True,
+        bridge_top_pairs=2,
+        bridge_concepts=1,
+        bridge_max_rules=4,
     ),
     "quality_large_cls": DfflProfile(
         name="quality_large_cls",
@@ -365,11 +415,15 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         decision_max_rules=12,
         stage2_width_min=4,
         stage2_width_max=9,
+        aggregate_global_context_dim=3,
+        aggregate_global_max_rules=12,
         local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
-        decision_max_rule_arity=2,
+        aggregate_max_rule_arity=3,
+        decision_max_rule_arity=3,
         decision_three_terms=False,
+        local_max_rule_arity=3,
         learning_rate_scale_regression=1.0,
         learning_rate_scale_classification=1.0,
         refinement_cycle_floor=2,
@@ -388,29 +442,52 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_prototype_sample_size=1024,
         aggregate_prototype_sample_size=1024,
         decision_prototype_sample_size=1024,
+        top_k_rules=24,
+        binary_auto_pos_weight=True,
+        binary_soft_f1_weight=0.2,
+        weight_decay=1e-5,
+        gradient_clip_norm=5.0,
+        rule_sparsity_weight=3e-5,
+        rule_length_weight=1e-5,
+        decision_usage_balance_weight=3e-3,
+        block_gates_enabled=True,
+        block_gate_init_logit=4.0,
+        block_gate_l1_weight=5e-5,
+        local_consequent_mode="affine_sigmoid",
+        aggregate_consequent_mode="affine_sigmoid",
+        bridge_enabled=True,
+        bridge_top_pairs=8,
+        bridge_pair_score_alpha=0.65,
+        bridge_concepts=1,
+        bridge_max_rules=6,
+        bridge_prototype_term_limit=2,
+        bridge_prototype_scoring_mode="hybrid",
+        bridge_prototype_sample_size=1024,
     ),
     "quality_large_cls_plus": DfflProfile(
         name="quality_large_cls_plus",
         local_concepts=2,
-        local_max_rules=12,
-        # Larger aggregate rule budget improves cross-group interaction coverage on large binary tasks.
-        aggregate_max_rules=32,
-        # A leaner decision layer avoids rule dilution and keeps final reasoning compact.
-        decision_max_rules=8,
-        stage2_width_min=4,
-        stage2_width_max=10,
-        aggregate_block_count=1,
-        aggregate_overlap=0,
-        local_max_rule_arity=2,
+        local_max_rules=10,
+        aggregate_max_rules=28,
+        decision_max_rules=14,
+        stage2_width_min=5,
+        stage2_width_max=12,
+        aggregate_block_count=2,
+        aggregate_overlap=1,
+        aggregate_global_context_dim=4,
+        aggregate_global_max_rules=14,
+        local_max_rule_arity=3,
         local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
         decision_rule_generation_mode="prototype",
-        decision_max_rule_arity=2,
+        aggregate_max_rule_arity=3,
+        decision_max_rule_arity=3,
         decision_three_terms=False,
         learning_rate_scale_regression=1.0,
-        learning_rate_scale_classification=1.1,
+        learning_rate_scale_classification=1.05,
         refinement_cycle_floor=2,
         pretrain_refinement_rounds=2,
+        top_k_rules=24,
         input_group_size=4,
         input_group_strategy="target_corr",
         input_group_correlation_weight=0.8,
@@ -418,14 +495,34 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_prototype_scoring_mode="max",
         local_prototype_variable_pool_size=4,
         aggregate_prototype_term_limit=3,
-        aggregate_prototype_scoring_mode="max",
-        aggregate_prototype_variable_pool_size=12,
+        aggregate_prototype_scoring_mode="hybrid",
+        aggregate_prototype_variable_pool_size=16,
         decision_prototype_term_limit=3,
-        decision_prototype_scoring_mode="max",
-        decision_prototype_variable_pool_size=8,
+        decision_prototype_scoring_mode="hybrid",
+        decision_prototype_variable_pool_size=10,
         local_prototype_sample_size=1024,
         aggregate_prototype_sample_size=1024,
         decision_prototype_sample_size=1024,
+        binary_auto_pos_weight=True,
+        binary_soft_f1_weight=0.25,
+        weight_decay=1e-5,
+        gradient_clip_norm=5.0,
+        rule_sparsity_weight=3e-5,
+        rule_length_weight=1e-5,
+        decision_usage_balance_weight=3e-3,
+        block_gates_enabled=True,
+        block_gate_init_logit=4.0,
+        block_gate_l1_weight=5e-5,
+        local_consequent_mode="affine_sigmoid",
+        aggregate_consequent_mode="affine_sigmoid",
+        bridge_enabled=True,
+        bridge_top_pairs=12,
+        bridge_pair_score_alpha=0.7,
+        bridge_concepts=1,
+        bridge_max_rules=8,
+        bridge_prototype_term_limit=2,
+        bridge_prototype_scoring_mode="hybrid",
+        bridge_prototype_sample_size=1024,
     ),
 }
 
@@ -441,24 +538,18 @@ def resolve_dffl_profile(
         # Large binary datasets need slightly larger rule budgets than compact large-cls.
         if task_type == "binary_classification" and n_samples >= 8_000:
             return DFFL_PROFILES["quality_large_cls_plus"]
-        # High-dimensional medium-large binary datasets (e.g., digits-like) also need tighter budgets.
+        # Large high-dimensional binary datasets can benefit from tighter large-cls profile.
         if (
             task_type == "binary_classification"
             and input_dim is not None
             and n_samples >= 1_500
-            and input_dim >= 50
+            and input_dim >= 40
         ):
             return DFFL_PROFILES["quality_large_cls"]
-        # Medium-size, high-dimensional binary tasks also benefit from the tighter large-cls profile.
-        if (
-            task_type == "binary_classification"
-            and input_dim is not None
-            and n_samples >= 400
-            and input_dim >= 25
-        ):
-            return DFFL_PROFILES["quality_large_cls"]
-        # Very small binary datasets are better served by a more stable balanced profile.
+        # Very small low-dimensional binary datasets (e.g., wine) benefit from richer concept profile.
         if task_type == "binary_classification" and n_samples <= 250:
+            if input_dim is not None and input_dim <= 20:
+                return DFFL_PROFILES["quality"]
             return DFFL_PROFILES["quality_balanced"]
         # Tiny regression datasets are highly sensitive to over-parameterized DFFL variants.
         if task_type == "regression" and n_samples <= 50:
@@ -508,6 +599,13 @@ def _feature_feature_correlation(inputs: torch.Tensor) -> np.ndarray:
     corr = np.abs(corr)
     np.fill_diagonal(corr, 1.0)
     return np.clip(corr, 0.0, 1.0)
+
+
+def _detect_binary_feature_indices(inputs: torch.Tensor, eps: float = 1e-6) -> tuple[int, ...]:
+    if inputs.ndim != 2:
+        raise ValueError(f"Expected 2D inputs, got shape {tuple(inputs.shape)}.")
+    clamped_binary_mask = ((inputs <= eps) | (inputs >= (1.0 - eps))).all(dim=0)
+    return tuple(int(index) for index in torch.where(clamped_binary_mask)[0].detach().cpu().tolist())
 
 
 def _make_target_corr_groups(
@@ -567,6 +665,11 @@ def make_dffl_input_groups(
     if profile.input_group_strategy == "contiguous":
         return _make_groups(int(train_inputs.shape[1]), group_size=profile.input_group_size)
     if profile.input_group_strategy == "target_corr":
+        binary_indices = _detect_binary_feature_indices(train_inputs)
+        binary_ratio = len(binary_indices) / float(train_inputs.shape[1])
+        # For binary-heavy datasets (e.g., one-hot dominant), plain contiguous grouping is more stable.
+        if binary_ratio >= 0.6:
+            return _make_groups(int(train_inputs.shape[1]), group_size=profile.input_group_size)
         return _make_target_corr_groups(
             train_inputs,
             train_targets,
@@ -577,6 +680,81 @@ def make_dffl_input_groups(
         f"Unsupported input_group_strategy={profile.input_group_strategy!r}. "
         "Expected 'contiguous' or 'target_corr'."
     )
+
+
+def make_dffl_bridge_pairs(
+    profile: DfflProfile,
+    *,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    input_groups: tuple[tuple[int, ...], ...],
+) -> tuple[tuple[int, int], ...]:
+    if (not profile.bridge_enabled) or profile.bridge_top_pairs <= 0:
+        return ()
+    input_dim = int(train_inputs.shape[1])
+    if input_dim <= 1 or train_inputs.shape[0] < 8:
+        return ()
+
+    feature_to_group = np.full(input_dim, fill_value=-1, dtype=np.int64)
+    for group_index, group in enumerate(input_groups):
+        for feature_index in group:
+            feature_to_group[int(feature_index)] = group_index
+
+    relevance = _feature_target_relevance(train_inputs, train_targets)
+    pairwise_corr = _feature_feature_correlation(train_inputs)
+    alpha = min(1.0, max(0.0, float(profile.bridge_pair_score_alpha)))
+
+    scored_pairs: list[tuple[float, int, int]] = []
+    for left in range(input_dim):
+        group_left = int(feature_to_group[left])
+        if group_left < 0:
+            continue
+        for right in range(left + 1, input_dim):
+            group_right = int(feature_to_group[right])
+            if group_right < 0 or group_right == group_left:
+                continue
+            rel_score = float(relevance[left] * relevance[right])
+            corr_score = float(pairwise_corr[left, right])
+            score = alpha * corr_score + (1.0 - alpha) * rel_score
+            scored_pairs.append((score, left, right))
+
+    def _estimate_intergroup_interaction_share() -> float:
+        x = train_inputs.detach().cpu().numpy().astype(np.float64, copy=False)
+        y = train_targets.detach().cpu().numpy().reshape(-1).astype(np.float64, copy=False)
+        x_centered = x - x.mean(axis=0, keepdims=True)
+        y_centered = y - y.mean()
+        y_norm = float(np.sqrt(np.sum(y_centered * y_centered)) + 1e-12)
+        total_strength = 0.0
+        intergroup_strength = 0.0
+        for i in range(input_dim):
+            xi = x_centered[:, i]
+            group_i = int(feature_to_group[i])
+            for j in range(i + 1, input_dim):
+                xj = x_centered[:, j]
+                z = xi * xj
+                z_centered = z - z.mean()
+                z_norm = float(np.sqrt(np.sum(z_centered * z_centered)) + 1e-12)
+                strength = float(abs(np.dot(z_centered, y_centered) / (z_norm * y_norm)))
+                total_strength += strength
+                if int(feature_to_group[j]) != group_i:
+                    intergroup_strength += strength
+        return float(intergroup_strength / (total_strength + 1e-12))
+
+    interaction_share = _estimate_intergroup_interaction_share()
+    base_top_pairs = int(profile.bridge_top_pairs)
+    if interaction_share >= 0.85:
+        effective_top_pairs = base_top_pairs
+    elif interaction_share >= 0.70:
+        effective_top_pairs = max(2, int(np.ceil(base_top_pairs * 0.75)))
+    elif interaction_share >= 0.55:
+        effective_top_pairs = max(1, int(np.ceil(base_top_pairs * 0.50)))
+    else:
+        effective_top_pairs = max(1, int(np.ceil(base_top_pairs * 0.33)))
+    effective_top_pairs = min(base_top_pairs, effective_top_pairs)
+
+    scored_pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
+    top_pairs = scored_pairs[:effective_top_pairs]
+    return tuple((int(left), int(right)) for _, left, right in top_pairs)
 
 
 def _concept_width(input_dim: int) -> int:
@@ -745,33 +923,83 @@ def build_dffl_config(
     profile: DfflProfile,
     *,
     input_groups: tuple[tuple[int, ...], ...] | None = None,
+    binary_feature_indices: tuple[int, ...] | None = None,
+    bridge_feature_pairs: tuple[tuple[int, int], ...] | None = None,
 ) -> HierarchicalModelConfig:
     groups = input_groups or _make_groups(input_dim, group_size=profile.input_group_size)
+    binary_feature_set = set(binary_feature_indices or ())
+    n_local_groups = len(groups)
+    local_max_rules_effective = int(profile.local_max_rules)
+    if n_local_groups > 4:
+        stage1_target_total_rules = min(160, max(96, 10 * n_local_groups))
+        if input_dim >= 40 and n_local_groups >= 12:
+            stage1_target_total_rules = min(stage1_target_total_rules, 128)
+        local_max_rules_effective = min(
+            local_max_rules_effective,
+            max(8, stage1_target_total_rules // n_local_groups),
+        )
+    bridge_max_rules_effective = min(profile.bridge_max_rules, max(4, local_max_rules_effective - 2))
+    decision_max_rules_effective = int(profile.decision_max_rules)
+    if n_local_groups >= 12 and input_dim >= 40:
+        decision_max_rules_effective = min(decision_max_rules_effective, 12)
+
     stage_1_blocks = []
     for block_index, indices in enumerate(groups):
         stage_1_blocks.append(
             TransparentBlockConfig(
                 name=f"dffl_local_{block_index}",
                 input_indices=indices,
-                variables=tuple(var3(f"x{idx}") for idx in indices),
+                variables=tuple(
+                    (var_binary(f"x{idx}") if idx in binary_feature_set else var3(f"x{idx}"))
+                    for idx in indices
+                ),
                 n_concepts=profile.local_concepts,
                 concept_names=tuple(
                     f"s1_{block_index}_{concept_index}" for concept_index in range(profile.local_concepts)
                 ),
                 max_rule_arity=min(profile.local_max_rule_arity, len(indices)),
-                max_rules=profile.local_max_rules,
+                max_rules=local_max_rules_effective,
                 rule_generation_mode=profile.local_rule_generation_mode,
                 prototype_term_limit=profile.local_prototype_term_limit,
                 prototype_scoring_mode=profile.local_prototype_scoring_mode,
                 prototype_variable_pool_size=profile.local_prototype_variable_pool_size,
                 prototype_sample_size=profile.local_prototype_sample_size,
+                consequent_mode=profile.local_consequent_mode,
             )
         )
 
-    stage_1_width = profile.local_concepts * len(groups)
+    bridge_pairs = tuple(bridge_feature_pairs or ())
+    if profile.bridge_enabled and bridge_pairs:
+        for pair_index, (left_idx, right_idx) in enumerate(bridge_pairs):
+            if left_idx == right_idx:
+                continue
+            pair = tuple(sorted((int(left_idx), int(right_idx))))
+            stage_1_blocks.append(
+                TransparentBlockConfig(
+                    name=f"dffl_bridge_{pair_index}",
+                    input_indices=pair,
+                    variables=tuple(
+                        (var_binary(f"x{idx}") if idx in binary_feature_set else var3(f"x{idx}"))
+                        for idx in pair
+                    ),
+                    n_concepts=profile.bridge_concepts,
+                    concept_names=tuple(f"s1b_{pair_index}_{i}" for i in range(profile.bridge_concepts)),
+                    max_rule_arity=min(profile.bridge_max_rule_arity, len(pair)),
+                    max_rules=bridge_max_rules_effective,
+                    rule_generation_mode=profile.bridge_rule_generation_mode,
+                    prototype_term_limit=profile.bridge_prototype_term_limit,
+                    prototype_scoring_mode=profile.bridge_prototype_scoring_mode,
+                    prototype_variable_pool_size=profile.bridge_prototype_variable_pool_size,
+                    prototype_sample_size=profile.bridge_prototype_sample_size,
+                    consequent_mode=profile.local_consequent_mode,
+                )
+            )
+
+    stage_1_width = int(sum(block.n_concepts for block in stage_1_blocks))
+    width_driver = len(groups) + len(bridge_pairs)
     stage_2_width = min(
         profile.stage2_width_max,
-        max(profile.stage2_width_min, len(groups) + 1),
+        max(profile.stage2_width_min, width_driver + 1),
     )
     aggregate_blocks = max(1, min(profile.aggregate_block_count, stage_2_width))
     aggregate_rule_budget = _split_even(profile.aggregate_max_rules, aggregate_blocks)
@@ -796,15 +1024,43 @@ def build_dffl_config(
                 variables=tuple(var3(f"s1_{i}") for i in block_input_indices),
                 n_concepts=block_output_dim,
                 concept_names=block_concept_names,
-                max_rule_arity=2,
+                max_rule_arity=min(profile.aggregate_max_rule_arity, len(block_input_indices)),
                 max_rules=aggregate_rule_budget[block_index],
                 rule_generation_mode=profile.aggregate_rule_generation_mode,
                 prototype_term_limit=profile.aggregate_prototype_term_limit,
                 prototype_scoring_mode=profile.aggregate_prototype_scoring_mode,
                 prototype_variable_pool_size=profile.aggregate_prototype_variable_pool_size,
                 prototype_sample_size=profile.aggregate_prototype_sample_size,
+                consequent_mode=profile.aggregate_consequent_mode,
             )
         )
+
+    if profile.aggregate_global_context_dim > 0:
+        global_dim = int(profile.aggregate_global_context_dim)
+        global_max_rules = (
+            int(profile.aggregate_global_max_rules)
+            if profile.aggregate_global_max_rules > 0
+            else max(4, min(profile.aggregate_max_rules // 2, 12))
+        )
+        global_names = tuple(f"s2g_{i}" for i in range(global_dim))
+        stage_2_blocks.append(
+            TransparentBlockConfig(
+                name="dffl_aggregate_global",
+                input_indices=tuple(range(stage_1_width)),
+                variables=tuple(var3(f"s1_{i}") for i in range(stage_1_width)),
+                n_concepts=global_dim,
+                concept_names=global_names,
+                max_rule_arity=min(profile.aggregate_max_rule_arity, stage_1_width),
+                max_rules=global_max_rules,
+                rule_generation_mode=profile.aggregate_rule_generation_mode,
+                prototype_term_limit=profile.aggregate_prototype_term_limit,
+                prototype_scoring_mode=profile.aggregate_prototype_scoring_mode,
+                prototype_variable_pool_size=profile.aggregate_prototype_variable_pool_size,
+                prototype_sample_size=profile.aggregate_prototype_sample_size,
+                consequent_mode=profile.aggregate_consequent_mode,
+            )
+        )
+        stage_2_width += global_dim
 
     return HierarchicalModelConfig(
         input_dim=input_dim,
@@ -812,10 +1068,14 @@ def build_dffl_config(
             StageConfig(
                 name="dffl_stage_1_local",
                 blocks=tuple(stage_1_blocks),
+                enable_block_gates=profile.block_gates_enabled,
+                block_gate_init_logit=profile.block_gate_init_logit,
             ),
             StageConfig(
                 name="dffl_stage_2_aggregate",
                 blocks=tuple(stage_2_blocks),
+                enable_block_gates=profile.block_gates_enabled,
+                block_gate_init_logit=profile.block_gate_init_logit,
             ),
         ),
         decision_layer=DecisionLayerConfig(
@@ -827,7 +1087,7 @@ def build_dffl_config(
             output_dim=1,
             output_names=("target",),
             max_rule_arity=profile.decision_max_rule_arity,
-            max_rules=profile.decision_max_rules,
+            max_rules=decision_max_rules_effective,
             rule_generation_mode=profile.decision_rule_generation_mode,
             prototype_term_limit=profile.decision_prototype_term_limit,
             prototype_scoring_mode=profile.decision_prototype_scoring_mode,
@@ -979,6 +1239,7 @@ def run_single_seed_dataset_benchmark(
     patience: int,
     classification_threshold: float,
     tune_fuzzy_threshold: bool,
+    dffl_one_phase: bool,
     device: str | None,
     fuzzy_models: tuple[str, ...] = FUZZY_MODEL_NAMES,
     include_sklearn: bool = True,
@@ -1024,14 +1285,22 @@ def run_single_seed_dataset_benchmark(
         train_inputs=train_inputs,
         train_targets=train_targets,
     )
+    dffl_bridge_pairs = make_dffl_bridge_pairs(
+        dffl_profile,
+        train_inputs=train_inputs,
+        train_targets=train_targets,
+        input_groups=dffl_input_groups,
+    )
+    dffl_binary_feature_indices = _detect_binary_feature_indices(train_inputs)
     progress_log(
-        "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, groups={groups}".format(
+        "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, groups={groups}, bridges={bridges}".format(
             seed=seed,
             name=dffl_profile.name,
             task=spec.task_type,
             device=device or "default",
             grouping=dffl_profile.input_group_strategy,
             groups=len(dffl_input_groups),
+            bridges=len(dffl_bridge_pairs),
         )
     )
 
@@ -1048,55 +1317,105 @@ def run_single_seed_dataset_benchmark(
     if "ruanfis_refined_deep" in fuzzy_models:
         phase_started_at = time.perf_counter()
         progress_log(f"seed={seed} model=dffl: start")
+        hidden_high = 0.75 if spec.task_type == "binary_classification" else 0.8
+        hidden_low = 0.25 if spec.task_type == "binary_classification" else 0.2
+        gate_floor = 0.15
+        gate_ceiling = 0.9
+        # Large binary tasks are sensitive to over-confident bootstrap concepts/rules.
+        if (
+            dffl_one_phase
+            and spec.task_type == "binary_classification"
+            and dffl_profile.name in {"quality_large_cls", "quality_large_cls_plus"}
+        ):
+            hidden_high = 0.65
+            hidden_low = 0.35
+            gate_floor = 0.2
+            gate_ceiling = 0.8
         dffl_bootstrap_config = BootstrapConfig(
             decision_task_type=spec.task_type,
-            hidden_high=0.75 if spec.task_type == "binary_classification" else 0.8,
-            hidden_low=0.25 if spec.task_type == "binary_classification" else 0.2,
-            gate_floor=0.15,
-            gate_ceiling=0.9,
+            hidden_high=hidden_high,
+            hidden_low=hidden_low,
+            gate_floor=gate_floor,
+            gate_ceiling=gate_ceiling,
         )
-        dffl_result = build_refined_hierarchical_model(
-            build_dffl_config(split.input_dim, profile=dffl_profile, input_groups=dffl_input_groups),
-            train_inputs=train_inputs,
-            train_targets=train_targets,
-            validation_inputs=validation_inputs,
-            validation_targets=validation_targets,
-            bootstrap_config=dffl_bootstrap_config,
-            pretraining_config=StagewisePretrainingConfig(
-                task_type=spec.task_type,
-                epochs_per_stage=pretrain_epochs,
-                decision_epochs=decision_pretrain_epochs,
-                refinement_rounds=dffl_profile.pretrain_refinement_rounds,
-                learning_rate=dffl_learning_rate_effective,
-                batch_size=batch_size,
-                shuffle=True,
-                rule_sparsity_weight=0.0,
-                stage_selection_metric="auto",
-                stage_selection_threshold=classification_threshold,
+        dffl_config = build_dffl_config(
+            split.input_dim,
+            profile=dffl_profile,
+            input_groups=dffl_input_groups,
+            binary_feature_indices=dffl_binary_feature_indices,
+            bridge_feature_pairs=dffl_bridge_pairs,
+        )
+        dffl_training_config = TrainingConfig(
+            task_type=spec.task_type,
+            max_epochs=max_epochs,
+            learning_rate=dffl_learning_rate_effective,
+            patience=min(patience, max_epochs),
+            batch_size=batch_size,
+            shuffle=True,
+            classification_threshold=classification_threshold,
+            monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+            monitor_mode="max" if spec.task_type == "binary_classification" else None,
+            top_k_rules=dffl_profile.top_k_rules,
+            binary_auto_pos_weight=(
+                spec.task_type == "binary_classification" and dffl_profile.binary_auto_pos_weight
             ),
-            training_config=TrainingConfig(
-                task_type=spec.task_type,
-                max_epochs=max_epochs,
-                learning_rate=dffl_learning_rate_effective,
-                patience=min(patience, max_epochs),
-                batch_size=batch_size,
-                shuffle=True,
-                classification_threshold=classification_threshold,
-                monitor_metric="f1" if spec.task_type == "binary_classification" else None,
-                monitor_mode="max" if spec.task_type == "binary_classification" else None,
-                top_k_rules=dffl_profile.top_k_rules,
-                rule_sparsity_weight=0.0,
-                rule_length_weight=0.0,
-                prune_after_fit=False,
+            binary_soft_f1_weight=(
+                (
+                    dffl_profile.binary_soft_f1_weight
+                    if (spec.task_type == "binary_classification" and dffl_one_phase)
+                    else 0.0
+                )
+            ),
+            weight_decay=dffl_profile.weight_decay,
+            gradient_clip_norm=dffl_profile.gradient_clip_norm,
+            rule_sparsity_weight=dffl_profile.rule_sparsity_weight,
+            rule_length_weight=dffl_profile.rule_length_weight,
+            decision_usage_balance_weight=dffl_profile.decision_usage_balance_weight,
+            block_gate_l1_weight=dffl_profile.block_gate_l1_weight,
+            regularization_warmup_epochs=max(1, max_epochs // 3),
+            top_k_warmup_epochs=(max(1, max_epochs // 4) if dffl_profile.top_k_rules is not None else 0),
+            prune_after_fit=False,
+            device=device,
+        )
+        if dffl_one_phase:
+            dffl_model = build_bootstrapped_hierarchical_model(
+                dffl_config,
+                sample_inputs=train_inputs,
+                sample_targets=train_targets,
+                bootstrap_config=dffl_bootstrap_config,
                 device=device,
-            ),
-            refinement_loop_config=RefinementLoopConfig(
-                max_cycles=dffl_refinement_cycles,
-                patience=1,
-                min_delta=1e-4,
-            ),
-        )
-        trained_fuzzy_models["ruanfis_refined_deep"] = dffl_result.model
+            )
+            dffl_trainer = FuzzyTrainer(dffl_model, dffl_training_config)
+            dffl_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
+            trained_fuzzy_models["ruanfis_refined_deep"] = dffl_model
+        else:
+            dffl_result = build_refined_hierarchical_model(
+                dffl_config,
+                train_inputs=train_inputs,
+                train_targets=train_targets,
+                validation_inputs=validation_inputs,
+                validation_targets=validation_targets,
+                bootstrap_config=dffl_bootstrap_config,
+                pretraining_config=StagewisePretrainingConfig(
+                    task_type=spec.task_type,
+                    epochs_per_stage=pretrain_epochs,
+                    decision_epochs=decision_pretrain_epochs,
+                    refinement_rounds=dffl_profile.pretrain_refinement_rounds,
+                    learning_rate=dffl_learning_rate_effective,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    rule_sparsity_weight=0.0,
+                    stage_selection_metric="auto",
+                    stage_selection_threshold=classification_threshold,
+                ),
+                training_config=dffl_training_config,
+                refinement_loop_config=RefinementLoopConfig(
+                    max_cycles=dffl_refinement_cycles,
+                    patience=1,
+                    min_delta=1e-4,
+                ),
+            )
+            trained_fuzzy_models["ruanfis_refined_deep"] = dffl_result.model
         model_top_k_rules["ruanfis_refined_deep"] = dffl_profile.top_k_rules
         progress_log(f"seed={seed} model=dffl: done in {time.perf_counter() - phase_started_at:.2f}s")
 
@@ -1265,12 +1584,19 @@ def _rank_scores(values: dict[str, float], higher_is_better: bool) -> dict[str, 
     return {model_name: float(index + 1) for index, (model_name, _) in enumerate(ordered)}
 
 
+def _format_mean_std(mean: float, std: float, decimals: int = 4) -> str:
+    return f"{mean:.{decimals}f} +/- {std:.{decimals}f}"
+
+
 def build_cross_dataset_summary(
     dataset_results: dict[str, MultiSeedBenchmarkResult],
     specs: dict[str, DatasetSpec],
 ) -> str:
     if not dataset_results:
-        return "| model | avg_rank | wins | avg_rules | avg_active_rule_jaccard |\n| --- | --- | --- | --- | --- |"
+        return (
+            "| model | avg_rank | wins | avg_rules (mean+/-std) | avg_active_rule_jaccard (mean+/-std) |\n"
+            "| --- | --- | --- | --- | --- |"
+        )
 
     per_dataset_available = {
         dataset_name: {entry.model_name for entry in multi_seed.aggregated_results}
@@ -1282,9 +1608,12 @@ def build_cross_dataset_summary(
         if all(model_name in available for available in per_dataset_available.values())
     )
     if not fuzzy_model_names:
-        return "| model | avg_rank | wins | avg_rules | avg_active_rule_jaccard |\n| --- | --- | --- | --- | --- |"
+        return (
+            "| model | avg_rank | wins | avg_rules (mean+/-std) | avg_active_rule_jaccard (mean+/-std) |\n"
+            "| --- | --- | --- | --- | --- |"
+        )
 
-    per_dataset_scores: dict[str, dict[str, float]] = {}
+    per_dataset_scores: dict[str, dict[str, tuple[float, float]]] = {}
     per_dataset_ranks: dict[str, dict[str, float]] = {}
 
     for dataset_name, multi_seed in dataset_results.items():
@@ -1294,20 +1623,24 @@ def build_cross_dataset_summary(
             for entry in multi_seed.aggregated_results
             if entry.model_name in fuzzy_model_names
         }
+        metric_name = PRIMARY_METRIC[spec.task_type]
         scores = {
-            model_name: _primary_score(aggregated[model_name], spec.task_type)
+            model_name: (
+                float(aggregated[model_name].test_metrics[metric_name].mean),
+                float(aggregated[model_name].test_metrics[metric_name].std),
+            )
             for model_name in fuzzy_model_names
         }
         per_dataset_scores[dataset_name] = scores
         per_dataset_ranks[dataset_name] = _rank_scores(
-            scores,
+            {model_name: score_mean for model_name, (score_mean, _) in scores.items()},
             higher_is_better=(spec.task_type == "binary_classification"),
         )
 
     lines = [
-        "| model | avg_rank | wins | avg_rules | avg_active_rule_jaccard | "
+        "| model | avg_rank | wins | avg_rules (mean+/-std) | avg_active_rule_jaccard (mean+/-std) | "
         + " | ".join(
-            f"{dataset_name}:{PRIMARY_METRIC[specs[dataset_name].task_type]}"
+            f"{dataset_name}:{PRIMARY_METRIC[specs[dataset_name].task_type]} (mean+/-std)"
             for dataset_name in dataset_results.keys()
         )
         + " |",
@@ -1330,12 +1663,18 @@ def build_cross_dataset_summary(
             if "active_rule_jaccard" in entry.stability_metrics:
                 stability_values.append(float(entry.stability_metrics["active_rule_jaccard"]))
 
-            score = per_dataset_scores[dataset_name][model_name]
-            dataset_metric_cells.append(f"{score:.4f}")
+            score_mean, score_std = per_dataset_scores[dataset_name][model_name]
+            dataset_metric_cells.append(_format_mean_std(score_mean, score_std, decimals=4))
 
         avg_rank = float(sum(ranks) / len(ranks))
         avg_rules = float(sum(total_rules_values) / len(total_rules_values)) if total_rules_values else float("nan")
+        avg_rules_std = (
+            float(np.std(total_rules_values, ddof=0)) if len(total_rules_values) > 1 else 0.0
+        )
         avg_stability = float(sum(stability_values) / len(stability_values)) if stability_values else float("nan")
+        avg_stability_std = (
+            float(np.std(stability_values, ddof=0)) if len(stability_values) > 1 else 0.0
+        )
 
         lines.append(
             "| "
@@ -1344,8 +1683,8 @@ def build_cross_dataset_summary(
                     model_name,
                     f"{avg_rank:.3f}",
                     str(wins),
-                    f"{avg_rules:.2f}",
-                    f"{avg_stability:.4f}",
+                    _format_mean_std(avg_rules, avg_rules_std, decimals=2),
+                    _format_mean_std(avg_stability, avg_stability_std, decimals=4),
                     *dataset_metric_cells,
                 ]
             )
@@ -1439,6 +1778,373 @@ def build_interpretability_report(
     return "\n".join(lines).strip() + "\n"
 
 
+def _resolve_dffl_bootstrap_hyperparams(
+    *,
+    task_type: TaskType,
+    dffl_one_phase: bool,
+    resolved_profile_name: str,
+) -> dict[str, float]:
+    hidden_high = 0.75 if task_type == "binary_classification" else 0.8
+    hidden_low = 0.25 if task_type == "binary_classification" else 0.2
+    gate_floor = 0.15
+    gate_ceiling = 0.9
+    if (
+        dffl_one_phase
+        and task_type == "binary_classification"
+        and resolved_profile_name in {"quality_large_cls", "quality_large_cls_plus"}
+    ):
+        hidden_high = 0.65
+        hidden_low = 0.35
+        gate_floor = 0.2
+        gate_ceiling = 0.8
+    return {
+        "hidden_high": float(hidden_high),
+        "hidden_low": float(hidden_low),
+        "gate_floor": float(gate_floor),
+        "gate_ceiling": float(gate_ceiling),
+    }
+
+
+def _summarize_shallow_architecture(input_dim: int) -> dict[str, object]:
+    config = build_shallow_config(input_dim)
+    return {
+        "input_dim": int(input_dim),
+        "feature_block": {
+            "variables": len(config.feature_block.variables),
+            "n_concepts": int(config.feature_block.n_concepts),
+            "max_rule_arity": int(config.feature_block.max_rule_arity),
+            "max_rules": int(config.feature_block.max_rules),
+            "rule_generation_mode": str(config.feature_block.rule_generation_mode),
+        },
+        "decision_layer": {
+            "variables": len(config.decision_layer.variables),
+            "output_dim": int(config.decision_layer.output_dim),
+            "max_rule_arity": int(config.decision_layer.max_rule_arity),
+            "max_rules": int(config.decision_layer.max_rules),
+            "rule_generation_mode": str(config.decision_layer.rule_generation_mode),
+        },
+    }
+
+
+def _summarize_stacked_architecture(input_dim: int) -> dict[str, object]:
+    config = build_stacked_config(input_dim)
+    return {
+        "input_dim": int(input_dim),
+        "n_layers": len(config.layers),
+        "layers": [
+            {
+                "name": layer.name,
+                "variables": len(layer.variables),
+                "output_dim": int(layer.output_dim),
+                "max_rule_arity": int(layer.max_rule_arity),
+                "max_rules": int(layer.max_rules),
+                "rule_generation_mode": str(layer.rule_generation_mode),
+            }
+            for layer in config.layers
+        ],
+    }
+
+
+def _summarize_hierarchical_anfis_architecture(input_dim: int) -> dict[str, object]:
+    config = build_hierarchical_anfis_config(input_dim)
+    stage_summaries = []
+    for stage in config.stages:
+        stage_summaries.append(
+            {
+                "name": stage.name,
+                "n_blocks": len(stage.blocks),
+                "total_max_rules": int(sum(block.max_rules for block in stage.blocks)),
+                "blocks": [
+                    {
+                        "name": block.name,
+                        "input_arity": len(block.input_indices),
+                        "output_dim": int(block.output_dim),
+                        "max_rule_arity": int(block.max_rule_arity),
+                        "max_rules": int(block.max_rules),
+                        "rule_generation_mode": str(block.rule_generation_mode),
+                    }
+                    for block in stage.blocks
+                ],
+            }
+        )
+    return {
+        "input_dim": int(input_dim),
+        "stages": stage_summaries,
+        "decision_layer": {
+            "variables": len(config.decision_layer.variables),
+            "output_dim": int(config.decision_layer.output_dim),
+            "max_rule_arity": int(config.decision_layer.max_rule_arity),
+            "max_rules": int(config.decision_layer.max_rules),
+            "rule_generation_mode": str(config.decision_layer.rule_generation_mode),
+        },
+    }
+
+
+def _summarize_dffl_architecture(
+    *,
+    input_dim: int,
+    task_type: TaskType,
+    profile: DfflProfile,
+    input_groups: tuple[tuple[int, ...], ...],
+    bridge_pairs: tuple[tuple[int, int], ...] = (),
+) -> dict[str, object]:
+    n_local_groups = len(input_groups)
+    local_max_rules_effective = int(profile.local_max_rules)
+    if n_local_groups > 4:
+        stage1_target_total_rules = min(160, max(96, 10 * n_local_groups))
+        local_max_rules_effective = min(
+            local_max_rules_effective,
+            max(8, stage1_target_total_rules // n_local_groups),
+        )
+    bridge_max_rules_effective = min(profile.bridge_max_rules, max(4, local_max_rules_effective - 2))
+    decision_max_rules_effective = int(profile.decision_max_rules)
+    if n_local_groups >= 12 and input_dim >= 40:
+        decision_max_rules_effective = min(decision_max_rules_effective, 12)
+
+    bridge_width = int(profile.bridge_concepts * len(bridge_pairs))
+    stage_1_width = profile.local_concepts * len(input_groups) + bridge_width
+    stage_2_width_base = min(
+        profile.stage2_width_max,
+        max(profile.stage2_width_min, len(input_groups) + len(bridge_pairs) + 1),
+    )
+    aggregate_blocks = max(1, min(profile.aggregate_block_count, stage_2_width_base))
+    aggregate_rule_budget = _split_even(profile.aggregate_max_rules, aggregate_blocks)
+    stage_2_width_total = stage_2_width_base + (
+        int(profile.aggregate_global_context_dim) if profile.aggregate_global_context_dim > 0 else 0
+    )
+
+    return {
+        "input_dim": int(input_dim),
+        "task_type": str(task_type),
+        "resolved_profile_name": profile.name,
+        "profile_params": asdict(profile),
+        "input_grouping": {
+            "strategy": profile.input_group_strategy,
+            "group_count": len(input_groups),
+            "group_sizes": [len(group) for group in input_groups],
+        },
+        "bridge_intergroup": {
+            "enabled": bool(profile.bridge_enabled),
+            "pair_count": int(len(bridge_pairs)),
+            "pairs": [[int(left), int(right)] for left, right in bridge_pairs],
+            "concepts_per_pair": int(profile.bridge_concepts),
+            "width": int(bridge_width),
+        },
+        "derived_widths": {
+            "stage_1_width": int(stage_1_width),
+            "stage_2_width_base": int(stage_2_width_base),
+            "stage_2_width_total": int(stage_2_width_total),
+            "aggregate_blocks": int(aggregate_blocks),
+        },
+        "rule_budgets": {
+            "local_max_rules_per_block": int(profile.local_max_rules),
+            "local_max_rules_per_block_effective": int(local_max_rules_effective),
+            "aggregate_max_rules_total": int(profile.aggregate_max_rules),
+            "aggregate_max_rules_split": [int(value) for value in aggregate_rule_budget],
+            "aggregate_global_context_dim": int(profile.aggregate_global_context_dim),
+            "aggregate_global_max_rules": int(profile.aggregate_global_max_rules),
+            "bridge_max_rules_per_block": int(profile.bridge_max_rules),
+            "bridge_max_rules_per_block_effective": int(bridge_max_rules_effective),
+            "decision_max_rules": int(profile.decision_max_rules),
+            "decision_max_rules_effective": int(decision_max_rules_effective),
+        },
+    }
+
+
+def build_reproducibility_manifest_payload(
+    *,
+    args: argparse.Namespace,
+    dataset_names: tuple[str, ...],
+    seeds: tuple[int, ...],
+    fuzzy_models: tuple[str, ...],
+    dataset_protocols: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "generated_utc": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "script": "examples/run_real_datasets_benchmark.py",
+        "protocol": {
+            "datasets": list(dataset_names),
+            "seeds": list(seeds),
+            "split": {
+                "test_size": float(args.test_size),
+                "validation_size": float(args.validation_size),
+                "inner_validation_fraction": float(args.validation_size / (1.0 - args.test_size)),
+                "split_method": "train_test_split with fixed random_state per seed",
+                "stratification": "binary tasks stratified; regression tasks non-stratified",
+            },
+            "preprocessing": {
+                "feature_scaling": "MinMaxScaler to [0,1], followed by clipping to [0,1]",
+                "target_scaling_regression": "MinMaxScaler to [0,1]",
+                "target_scaling_classification": "none (binary labels as float tensor)",
+                "train_noise_sigma_regression_only": float(args.train_noise_sigma),
+            },
+            "execution": {
+                "fuzzy_models": list(fuzzy_models),
+                "include_sklearn_baselines": bool(not args.skip_sklearn),
+                "device": args.device if args.device is not None else "default",
+            },
+            "training_budgets": {
+                "max_epochs": int(args.max_epochs),
+                "pretrain_epochs": int(args.pretrain_epochs),
+                "decision_pretrain_epochs": int(args.decision_pretrain_epochs),
+                "refinement_cycles_requested": int(args.refinement_cycles),
+                "batch_size": int(args.batch_size),
+                "patience": int(args.patience),
+                "learning_rate_fuzzy": float(args.fuzzy_learning_rate),
+                "learning_rate_dffl_base": float(args.dffl_learning_rate),
+            },
+            "evaluation": {
+                "primary_metrics": {"regression": "rmse", "binary_classification": "f1"},
+                "classification_threshold_default": float(args.classification_threshold),
+                "tune_fuzzy_threshold": bool(args.tune_fuzzy_threshold),
+                "threshold_tuning_grid_if_enabled": "0.05..0.95 step=0.01 on validation split",
+                "active_rule_criterion": "rule_probability >= 0.5",
+                "stability_metrics": [
+                    "active_rule_jaccard",
+                    "decision_active_rule_jaccard",
+                    "layer_active_rule_jaccard",
+                ],
+            },
+        },
+        "model_hyperparameters": {
+            "ruanfis_shallow": {
+                "training": {
+                    "max_epochs": int(args.max_epochs),
+                    "learning_rate": float(args.fuzzy_learning_rate),
+                    "patience": int(min(args.patience, args.max_epochs)),
+                    "batch_size": int(args.batch_size),
+                    "shuffle": True,
+                }
+            },
+            "ruanfis_stacked_anfis": {
+                "training": {
+                    "max_epochs": int(args.max_epochs),
+                    "learning_rate": float(args.fuzzy_learning_rate),
+                    "patience": int(min(args.patience, args.max_epochs)),
+                    "batch_size": int(args.batch_size),
+                    "shuffle": True,
+                }
+            },
+            "ruanfis_hierarchical_anfis": {
+                "training": {
+                    "max_epochs": int(args.max_epochs),
+                    "learning_rate": float(args.fuzzy_learning_rate),
+                    "patience": int(min(args.patience, args.max_epochs)),
+                    "batch_size": int(args.batch_size),
+                    "shuffle": True,
+                }
+            },
+            "ruanfis_refined_deep": {
+                "dffl_profile_requested": str(args.dffl_profile),
+                "dffl_one_phase": bool(args.dffl_one_phase),
+                "training_base": {
+                    "max_epochs": int(args.max_epochs),
+                    "learning_rate_base": float(args.dffl_learning_rate),
+                    "patience": int(min(args.patience, args.max_epochs)),
+                    "batch_size": int(args.batch_size),
+                    "shuffle": True,
+                    "top_k_rules": "from resolved profile",
+                    "regularization": "from resolved profile",
+                },
+                "pretraining_refinement": {
+                    "pretrain_epochs": int(args.pretrain_epochs),
+                    "decision_pretrain_epochs": int(args.decision_pretrain_epochs),
+                    "refinement_cycles_requested": int(args.refinement_cycles),
+                    "stage_selection_metric": "auto",
+                    "stage_selection_threshold": float(args.classification_threshold),
+                },
+            },
+        },
+        "dataset_specific_protocols": dataset_protocols,
+    }
+
+
+def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
+    protocol = payload["protocol"]
+    split = protocol["split"]
+    preprocessing = protocol["preprocessing"]
+    training = protocol["training_budgets"]
+    evaluation = protocol["evaluation"]
+
+    lines: list[str] = []
+    lines.append("# Reproducibility Manifest")
+    lines.append("")
+    lines.append(f"- generated_utc: `{payload['generated_utc']}`")
+    lines.append(f"- script: `{payload['script']}`")
+    lines.append(f"- datasets: `{', '.join(protocol['datasets'])}`")
+    lines.append(f"- seeds: `{', '.join(str(seed) for seed in protocol['seeds'])}`")
+    lines.append("")
+    lines.append("## Split Protocol")
+    lines.append("")
+    lines.append(f"- test_size: `{split['test_size']}`")
+    lines.append(f"- validation_size: `{split['validation_size']}`")
+    lines.append(f"- inner_validation_fraction: `{split['inner_validation_fraction']:.6f}`")
+    lines.append(f"- split_method: {split['split_method']}")
+    lines.append(f"- stratification: {split['stratification']}")
+    lines.append("")
+    lines.append("## Preprocessing")
+    lines.append("")
+    lines.append(f"- feature_scaling: {preprocessing['feature_scaling']}")
+    lines.append(f"- target_scaling_regression: {preprocessing['target_scaling_regression']}")
+    lines.append(f"- target_scaling_classification: {preprocessing['target_scaling_classification']}")
+    lines.append(f"- train_noise_sigma_regression_only: `{preprocessing['train_noise_sigma_regression_only']}`")
+    lines.append("")
+    lines.append("## Training Budgets")
+    lines.append("")
+    lines.append(f"- max_epochs: `{training['max_epochs']}`")
+    lines.append(f"- pretrain_epochs: `{training['pretrain_epochs']}`")
+    lines.append(f"- decision_pretrain_epochs: `{training['decision_pretrain_epochs']}`")
+    lines.append(f"- refinement_cycles_requested: `{training['refinement_cycles_requested']}`")
+    lines.append(f"- batch_size: `{training['batch_size']}`")
+    lines.append(f"- patience: `{training['patience']}`")
+    lines.append(f"- learning_rate_fuzzy: `{training['learning_rate_fuzzy']}`")
+    lines.append(f"- learning_rate_dffl_base: `{training['learning_rate_dffl_base']}`")
+    lines.append("")
+    lines.append("## Evaluation Protocol")
+    lines.append("")
+    lines.append(f"- primary_metrics: `{evaluation['primary_metrics']}`")
+    lines.append(f"- classification_threshold_default: `{evaluation['classification_threshold_default']}`")
+    lines.append(f"- tune_fuzzy_threshold: `{evaluation['tune_fuzzy_threshold']}`")
+    lines.append(f"- threshold_tuning_grid_if_enabled: {evaluation['threshold_tuning_grid_if_enabled']}")
+    lines.append(f"- active_rule_criterion: {evaluation['active_rule_criterion']}")
+    lines.append(f"- stability_metrics: `{', '.join(evaluation['stability_metrics'])}`")
+    lines.append("")
+    lines.append("## Dataset-Specific DFFL Resolution")
+    lines.append("")
+    lines.append(
+        "| dataset | task | n_samples | input_dim | profile_resolved | one_phase | lr_effective | "
+        "groups | stage1_width | stage2_width_total | decision_max_rules |"
+    )
+    lines.append("| --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    for dataset_name, entry in payload["dataset_specific_protocols"].items():
+        dffl = entry["dffl"]
+        arch = dffl["architecture"]
+        lines.append(
+            "| {dataset} | {task} | {n_samples} | {input_dim} | {profile} | {one_phase} | {lr:.6f} | "
+            "{groups} | {s1} | {s2} | {dec_rules} |".format(
+                dataset=dataset_name,
+                task=entry["task_type"],
+                n_samples=entry["n_samples"],
+                input_dim=entry["input_dim"],
+                profile=dffl["resolved_profile"],
+                one_phase=dffl["one_phase"],
+                lr=dffl["effective_learning_rate"],
+                groups=arch["input_grouping"]["group_count"],
+                s1=arch["derived_widths"]["stage_1_width"],
+                s2=arch["derived_widths"]["stage_2_width_total"],
+                dec_rules=arch["rule_budgets"]["decision_max_rules"],
+            )
+        )
+    lines.append("")
+    lines.append("## Model Hyperparameters (Detailed)")
+    lines.append("")
+    lines.append("```json")
+    lines.append(json.dumps(payload["model_hyperparameters"], indent=2, ensure_ascii=False))
+    lines.append("```")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a unified multi-seed benchmark on 3-5 real tabular datasets for stacked/hierarchical/DFFL models."
@@ -1475,6 +2181,11 @@ def main() -> None:
         help="Tune binary-classification threshold per fuzzy model on validation split (max F1).",
     )
     parser.add_argument(
+        "--dffl-one-phase",
+        action="store_true",
+        help="Train DFFL in one-phase mode (bootstrap + single joint fit) without stage-wise refinement.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -1499,6 +2210,8 @@ def main() -> None:
     parser.add_argument("--summary-table-output", type=Path, default=None)
     parser.add_argument("--json-output", type=Path, default=None)
     parser.add_argument("--interpretability-report-output", type=Path, default=None)
+    parser.add_argument("--reproducibility-manifest-output", type=Path, default=None)
+    parser.add_argument("--reproducibility-manifest-json-output", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
 
@@ -1512,10 +2225,11 @@ def main() -> None:
 
     dataset_results: dict[str, MultiSeedBenchmarkResult] = {}
     dataset_reports: dict[str, str] = {}
+    dataset_protocols: dict[str, dict[str, object]] = {}
 
     for dataset_name in dataset_names:
         spec = DATASETS[dataset_name]
-        dataset_features, _ = spec.loader()
+        dataset_features, dataset_targets = spec.loader()
         resolved_profile = resolve_dffl_profile(
             profile_name=args.dffl_profile,
             task_type=spec.task_type,
@@ -1546,6 +2260,7 @@ def main() -> None:
                 patience=args.patience,
                 classification_threshold=args.classification_threshold,
                 tune_fuzzy_threshold=args.tune_fuzzy_threshold,
+                dffl_one_phase=args.dffl_one_phase,
                 device=args.device,
                 fuzzy_models=fuzzy_models,
                 include_sklearn=not args.skip_sklearn,
@@ -1566,6 +2281,59 @@ def main() -> None:
             f"DFFL PROFILE USED: {resolved_profile.name}\n"
             + render_dataset_multi_seed_report(spec, benchmark)
         )
+        input_dim = int(dataset_features.shape[1])
+        n_samples = int(dataset_features.shape[0])
+        targets_array = np.asarray(dataset_targets).astype(np.float32)
+        if targets_array.ndim == 1:
+            targets_tensor = torch.from_numpy(targets_array.reshape(-1, 1))
+        else:
+            targets_tensor = torch.from_numpy(targets_array)
+        full_inputs_tensor = torch.from_numpy(np.asarray(dataset_features).astype(np.float32))
+        dffl_groups = make_dffl_input_groups(
+            resolved_profile,
+            train_inputs=full_inputs_tensor,
+            train_targets=targets_tensor,
+        )
+        dffl_bridge_pairs = make_dffl_bridge_pairs(
+            resolved_profile,
+            train_inputs=full_inputs_tensor,
+            train_targets=targets_tensor,
+            input_groups=dffl_groups,
+        )
+        dffl_lr_effective = (
+            args.dffl_learning_rate * resolved_profile.learning_rate_scale_classification
+            if spec.task_type == "binary_classification"
+            else args.dffl_learning_rate * resolved_profile.learning_rate_scale_regression
+        )
+        dataset_protocols[dataset_name] = {
+            "task_type": spec.task_type,
+            "n_samples": n_samples,
+            "input_dim": input_dim,
+            "primary_metric": PRIMARY_METRIC[spec.task_type],
+            "architectures": {
+                "ruanfis_shallow": _summarize_shallow_architecture(input_dim),
+                "ruanfis_stacked_anfis": _summarize_stacked_architecture(input_dim),
+                "ruanfis_hierarchical_anfis": _summarize_hierarchical_anfis_architecture(input_dim),
+            },
+            "dffl": {
+                "resolved_profile": resolved_profile.name,
+                "one_phase": bool(args.dffl_one_phase),
+                "effective_learning_rate": float(dffl_lr_effective),
+                "refinement_cycles_effective": int(max(args.refinement_cycles, resolved_profile.refinement_cycle_floor)),
+                "bootstrap_hyperparams": _resolve_dffl_bootstrap_hyperparams(
+                    task_type=spec.task_type,
+                    dffl_one_phase=bool(args.dffl_one_phase),
+                    resolved_profile_name=resolved_profile.name,
+                ),
+                "architecture": _summarize_dffl_architecture(
+                    input_dim=input_dim,
+                    task_type=spec.task_type,
+                    profile=resolved_profile,
+                    input_groups=dffl_groups,
+                    bridge_pairs=dffl_bridge_pairs,
+                ),
+            },
+        }
 
         if args.output_dir is not None:
             args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1582,6 +2350,14 @@ def main() -> None:
         dataset_results,
         {name: DATASETS[name] for name in dataset_names},
     )
+    reproducibility_manifest_payload = build_reproducibility_manifest_payload(
+        args=args,
+        dataset_names=dataset_names,
+        seeds=seeds,
+        fuzzy_models=fuzzy_models,
+        dataset_protocols=dataset_protocols,
+    )
+    reproducibility_manifest_markdown = build_reproducibility_manifest_markdown(reproducibility_manifest_payload)
 
     full_report_sections = [
         "UNIFIED REAL-DATASET BENCHMARK",
@@ -1589,6 +2365,7 @@ def main() -> None:
         f"seeds: {', '.join(str(seed) for seed in seeds)}",
         f"train_noise_sigma (regression only): {args.train_noise_sigma:.4f}",
         f"dffl_profile: {args.dffl_profile}",
+        f"dffl_one_phase: {args.dffl_one_phase}",
         f"fuzzy_models: {', '.join(fuzzy_models)}",
         f"sklearn_baselines: {'off' if args.skip_sklearn else 'on'}",
         "",
@@ -1614,12 +2391,24 @@ def main() -> None:
         args.interpretability_report_output.parent.mkdir(parents=True, exist_ok=True)
         args.interpretability_report_output.write_text(interpretability_report, encoding="utf-8")
 
+    if args.reproducibility_manifest_output is not None:
+        args.reproducibility_manifest_output.parent.mkdir(parents=True, exist_ok=True)
+        args.reproducibility_manifest_output.write_text(reproducibility_manifest_markdown, encoding="utf-8")
+
+    if args.reproducibility_manifest_json_output is not None:
+        args.reproducibility_manifest_json_output.parent.mkdir(parents=True, exist_ok=True)
+        args.reproducibility_manifest_json_output.write_text(
+            json.dumps(reproducibility_manifest_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
     if args.json_output is not None:
         payload = {
             "datasets": list(dataset_names),
             "seeds": list(seeds),
             "train_noise_sigma": float(args.train_noise_sigma),
             "dffl_profile": args.dffl_profile,
+            "dffl_one_phase": bool(args.dffl_one_phase),
             "fuzzy_models": list(fuzzy_models),
             "skip_sklearn": bool(args.skip_sklearn),
             "dataset_results": {
@@ -1628,6 +2417,7 @@ def main() -> None:
             },
             "cross_dataset_summary_markdown": summary_table,
             "interpretability_report_markdown": interpretability_report,
+            "reproducibility_manifest": reproducibility_manifest_payload,
         }
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
         args.json_output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1635,6 +2425,13 @@ def main() -> None:
     if args.output_dir is not None:
         interpretability_path = args.output_dir / "interpretability_report.md"
         interpretability_path.write_text(interpretability_report, encoding="utf-8")
+        reproducibility_manifest_path = args.output_dir / "reproducibility_manifest.md"
+        reproducibility_manifest_path.write_text(reproducibility_manifest_markdown, encoding="utf-8")
+        reproducibility_manifest_json_path = args.output_dir / "reproducibility_manifest.json"
+        reproducibility_manifest_json_path.write_text(
+            json.dumps(reproducibility_manifest_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":

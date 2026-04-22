@@ -125,6 +125,7 @@ class TransparentFuzzyBlock(BaseFuzzyRuleLayer):
         rule_base: RuleBase | Sequence[RuleSpec],
         n_concepts: int,
         concept_names: Sequence[str] | None = None,
+        consequent_mode: str = "constant",
         epsilon: float = 1e-8,
     ) -> None:
         super().__init__(name=name, variables=variables, rule_base=rule_base, epsilon=epsilon)
@@ -133,11 +134,21 @@ class TransparentFuzzyBlock(BaseFuzzyRuleLayer):
         if concept_names is not None and len(concept_names) != n_concepts:
             raise ValueError("The number of concept names must match n_concepts.")
         self.n_concepts = int(n_concepts)
+        if consequent_mode not in {"constant", "affine_sigmoid"}:
+            raise ValueError(
+                f"Unsupported consequent_mode={consequent_mode!r}. Expected 'constant' or 'affine_sigmoid'."
+            )
+        self.consequent_mode = consequent_mode
         self.output_names = tuple(concept_names) if concept_names is not None else tuple(
             f"{name}_concept_{index}" for index in range(self.n_concepts)
         )
         self.raw_consequents = nn.Parameter(torch.zeros(self.n_rules, self.n_concepts))
         nn.init.normal_(self.raw_consequents, mean=0.0, std=0.15)
+        if self.consequent_mode == "affine_sigmoid":
+            self.rule_weights = nn.Parameter(torch.empty(self.n_rules, self.input_dim, self.n_concepts))
+            nn.init.xavier_uniform_(self.rule_weights)
+        else:
+            self.rule_weights = None
 
     @property
     def output_dim(self) -> int:
@@ -151,15 +162,23 @@ class TransparentFuzzyBlock(BaseFuzzyRuleLayer):
         self,
         inputs: Tensor,
         top_k_rules: int | None = None,
-    ) -> tuple[Tensor, tuple[Tensor, ...], Tensor, Tensor]:
+    ) -> tuple[Tensor, tuple[Tensor, ...], Tensor, Tensor, Tensor]:
         memberships = self._fuzzify(inputs)
         raw_rule_weights = self._compute_raw_rule_weights(memberships)
         normalized_rule_weights = self._normalize_rule_weights(raw_rule_weights, top_k_rules=top_k_rules)
-        outputs = normalized_rule_weights @ self.consequents
-        return outputs, memberships, raw_rule_weights, normalized_rule_weights
+        if self.consequent_mode == "affine_sigmoid":
+            if self.rule_weights is None:
+                raise RuntimeError("rule_weights are not initialized for affine_sigmoid mode.")
+            rule_outputs = torch.einsum("bi, ric -> brc", inputs, self.rule_weights) + self.raw_consequents.unsqueeze(0)
+            rule_outputs = torch.sigmoid(rule_outputs)
+            outputs = (normalized_rule_weights.unsqueeze(-1) * rule_outputs).sum(dim=1)
+        else:
+            rule_outputs = self.consequents.unsqueeze(0).expand(inputs.size(0), -1, -1)
+            outputs = normalized_rule_weights @ self.consequents
+        return outputs, memberships, raw_rule_weights, normalized_rule_weights, rule_outputs
 
     def forward(self, inputs: Tensor, top_k_rules: int | None = None) -> Tensor:
-        outputs, _, _, _ = self._run(inputs, top_k_rules=top_k_rules)
+        outputs, _, _, _, _ = self._run(inputs, top_k_rules=top_k_rules)
         return outputs
 
     def forward_with_trace(
@@ -167,11 +186,10 @@ class TransparentFuzzyBlock(BaseFuzzyRuleLayer):
         inputs: Tensor,
         top_k_rules: int | None = None,
     ) -> tuple[Tensor, BlockTrace]:
-        outputs, memberships, raw_rule_weights, normalized_rule_weights = self._run(
+        outputs, memberships, raw_rule_weights, normalized_rule_weights, rule_outputs = self._run(
             inputs,
             top_k_rules=top_k_rules,
         )
-        rule_outputs = self.consequents.unsqueeze(0).expand(inputs.size(0), -1, -1)
         trace = BlockTrace(
             block_name=self.name,
             inputs=inputs.detach(),

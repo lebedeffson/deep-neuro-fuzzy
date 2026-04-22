@@ -352,7 +352,7 @@ def initialize_transparent_block_from_samples(
     local_inputs = _to_feature_matrix(sample_inputs, block.input_dim, name="sample_inputs")
 
     with torch.no_grad():
-        _, _, raw_rule_weights, normalized_rule_weights = block._run(local_inputs)
+        _, _, raw_rule_weights, normalized_rule_weights, _ = block._run(local_inputs)
         support = raw_rule_weights.mean(dim=0)
         gate_probabilities = _support_to_gate_probabilities(
             support,

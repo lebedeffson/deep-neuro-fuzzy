@@ -10,6 +10,7 @@ from torch import Tensor, nn
 from .blocks import BaseFuzzyRuleLayer
 from .metrics import TaskType, compute_metrics
 from .regularizers import (
+    block_gate_l1_penalty,
     concept_binarization_penalty,
     concept_orthogonality_penalty,
     membership_coverage_penalty,
@@ -35,6 +36,8 @@ class TrainingConfig:
     classification_threshold: float = 0.5
     binary_auto_pos_weight: bool = False
     binary_pos_weight: float | None = None
+    binary_soft_f1_weight: float = 0.0
+    binary_soft_f1_epsilon: float = 1e-6
     regression_loss: str = "mse"  # "mse" | "huber"
     huber_delta: float = 1.0
     monitor_metric: str | None = None
@@ -50,6 +53,10 @@ class TrainingConfig:
     membership_max_overlap: float = 0.35
     membership_coverage_weight: float = 0.0
     membership_min_coverage: float = 0.6
+    decision_usage_balance_weight: float = 0.0
+    block_gate_l1_weight: float = 0.0
+    regularization_warmup_epochs: int = 0
+    top_k_warmup_epochs: int = 0
     prune_after_fit: bool = False
     prune_threshold: float = 0.1
     prune_temperature: float = 0.05
@@ -216,9 +223,21 @@ class FuzzyTrainer:
         monitor_name = self._resolve_monitor_name(has_validation)
 
         for epoch in range(1, self.config.max_epochs + 1):
-            train_result = self._run_training_epoch(train_inputs, train_targets, optimizer)
+            epoch_top_k_rules = self._resolve_epoch_top_k_rules(epoch)
+            epoch_regularization_scale = self._resolve_epoch_regularization_scale(epoch)
+            train_result = self._run_training_epoch(
+                train_inputs,
+                train_targets,
+                optimizer,
+                top_k_rules=epoch_top_k_rules,
+                regularization_scale=epoch_regularization_scale,
+            )
             validation_result = (
-                self.evaluate(validation_inputs, validation_targets)
+                self.evaluate(
+                    validation_inputs,
+                    validation_targets,
+                    top_k_rules_override=epoch_top_k_rules,
+                )
                 if has_validation and validation_inputs is not None and validation_targets is not None
                 else None
             )
@@ -285,13 +304,20 @@ class FuzzyTrainer:
             pruning_report=pruning_report,
         )
 
-    def evaluate(self, inputs: Tensor, targets: Tensor) -> EvaluationResult:
+    def evaluate(
+        self,
+        inputs: Tensor,
+        targets: Tensor,
+        *,
+        top_k_rules_override: int | None = None,
+    ) -> EvaluationResult:
         device = self._resolve_device()
         inputs = inputs.to(device=device, dtype=torch.float32)
         targets = targets.to(device=device, dtype=torch.float32)
         self.model.eval()
+        top_k_rules = self.config.top_k_rules if top_k_rules_override is None else top_k_rules_override
         with torch.no_grad():
-            predictions = self.model(inputs, top_k_rules=self.config.top_k_rules)
+            predictions = self.model(inputs, top_k_rules=top_k_rules)
             aligned_targets = self._align_targets(predictions, targets)
             loss = self.loss_fn(predictions, aligned_targets).item()
             metrics = compute_metrics(
@@ -329,6 +355,9 @@ class FuzzyTrainer:
         inputs: Tensor,
         targets: Tensor,
         optimizer: torch.optim.Optimizer,
+        *,
+        top_k_rules: int | None,
+        regularization_scale: float,
     ) -> EvaluationResult:
         self.model.train()
         prediction_batches: list[Tensor] = []
@@ -338,10 +367,28 @@ class FuzzyTrainer:
 
         for batch_inputs, batch_targets in self._iter_batches(inputs, targets):
             optimizer.zero_grad()
-            predictions = self.model(batch_inputs, top_k_rules=self.config.top_k_rules)
+            predictions = self.model(batch_inputs, top_k_rules=top_k_rules)
             aligned_targets = self._align_targets(predictions, batch_targets)
             task_loss = self.loss_fn(predictions, aligned_targets)
-            total_loss = task_loss + self._regularization_penalty()
+            if (
+                self.config.task_type == "binary_classification"
+                and self.config.binary_soft_f1_weight > 0.0
+            ):
+                task_loss = task_loss + (
+                    self.config.binary_soft_f1_weight
+                    * self._binary_soft_f1_loss(
+                        predictions,
+                        aligned_targets,
+                        epsilon=self.config.binary_soft_f1_epsilon,
+                    )
+                )
+            total_loss = task_loss + self._regularization_penalty(scale=regularization_scale)
+            if self.config.decision_usage_balance_weight > 0.0:
+                total_loss = total_loss + (
+                    regularization_scale
+                    * self.config.decision_usage_balance_weight
+                    * self._decision_usage_balance_penalty(batch_inputs, top_k_rules=top_k_rules)
+                )
             total_loss.backward()
 
             if self.config.gradient_clip_norm is not None:
@@ -367,6 +414,38 @@ class FuzzyTrainer:
             loss=float(total_task_loss / max(total_items, 1)),
             metrics=metrics,
         )
+
+    def _binary_soft_f1_loss(self, logits: Tensor, targets: Tensor, *, epsilon: float) -> Tensor:
+        probabilities = torch.sigmoid(logits)
+        if probabilities.ndim == 1:
+            probabilities = probabilities.unsqueeze(-1)
+        if targets.ndim == 1:
+            targets = targets.unsqueeze(-1)
+        targets = targets.to(dtype=probabilities.dtype)
+        true_positive = (probabilities * targets).sum(dim=0)
+        false_positive = (probabilities * (1.0 - targets)).sum(dim=0)
+        false_negative = ((1.0 - probabilities) * targets).sum(dim=0)
+        soft_f1 = (2.0 * true_positive + epsilon) / (
+            2.0 * true_positive + false_positive + false_negative + epsilon
+        )
+        return 1.0 - soft_f1.mean()
+
+    def _decision_usage_balance_penalty(self, inputs: Tensor, *, top_k_rules: int | None) -> Tensor:
+        if not hasattr(self.model, "decision_layer") or not hasattr(self.model, "forward_features"):
+            return next(self.model.parameters()).new_tensor(0.0)
+
+        decision_layer = getattr(self.model, "decision_layer")
+        if not hasattr(decision_layer, "_run"):
+            return next(self.model.parameters()).new_tensor(0.0)
+
+        features = self.model.forward_features(inputs, top_k_rules=top_k_rules)
+        _, _, _, normalized_rule_weights, _ = decision_layer._run(features, top_k_rules=top_k_rules)
+        if normalized_rule_weights.ndim != 2 or normalized_rule_weights.size(1) <= 1:
+            return normalized_rule_weights.new_tensor(0.0)
+
+        usage = normalized_rule_weights.mean(dim=0)
+        uniform = torch.full_like(usage, fill_value=1.0 / float(usage.numel()))
+        return torch.mean((usage - uniform) ** 2)
 
     def _resolve_monitor_mode(self) -> str:
         if self.config.monitor_mode is not None:
@@ -398,31 +477,54 @@ class FuzzyTrainer:
             )
         return float(source.metrics[metric_name])
 
-    def _regularization_penalty(self) -> Tensor:
+    def _resolve_epoch_top_k_rules(self, epoch: int) -> int | None:
+        if self.config.top_k_rules is None:
+            return None
+        if self.config.top_k_warmup_epochs <= 0:
+            return self.config.top_k_rules
+        if epoch <= self.config.top_k_warmup_epochs:
+            return None
+        return self.config.top_k_rules
+
+    def _resolve_epoch_regularization_scale(self, epoch: int) -> float:
+        if self.config.regularization_warmup_epochs <= 0:
+            return 1.0
+        return min(1.0, float(epoch) / float(self.config.regularization_warmup_epochs))
+
+    def _regularization_penalty(self, *, scale: float = 1.0) -> Tensor:
         penalty = next(self.model.parameters()).new_tensor(0.0)
+        scale = float(scale)
+        if scale <= 0.0:
+            return penalty
         if self.config.rule_sparsity_weight > 0.0:
-            penalty = penalty + self.config.rule_sparsity_weight * rule_sparsity_penalty(self.model)
+            penalty = penalty + scale * self.config.rule_sparsity_weight * rule_sparsity_penalty(self.model)
         if self.config.rule_length_weight > 0.0:
-            penalty = penalty + self.config.rule_length_weight * weighted_rule_length_penalty(self.model)
+            penalty = penalty + scale * self.config.rule_length_weight * weighted_rule_length_penalty(self.model)
         if self.config.concept_orthogonality_weight > 0.0:
-            penalty = penalty + self.config.concept_orthogonality_weight * concept_orthogonality_penalty(self.model)
+            penalty = penalty + scale * self.config.concept_orthogonality_weight * concept_orthogonality_penalty(
+                self.model
+            )
         if self.config.concept_binarization_weight > 0.0:
-            penalty = penalty + self.config.concept_binarization_weight * concept_binarization_penalty(self.model)
+            penalty = penalty + scale * self.config.concept_binarization_weight * concept_binarization_penalty(
+                self.model
+            )
         if self.config.membership_order_weight > 0.0:
-            penalty = penalty + self.config.membership_order_weight * membership_center_order_penalty(
+            penalty = penalty + scale * self.config.membership_order_weight * membership_center_order_penalty(
                 self.model,
                 min_gap=self.config.membership_min_gap,
             )
         if self.config.membership_overlap_weight > 0.0:
-            penalty = penalty + self.config.membership_overlap_weight * membership_overlap_penalty(
+            penalty = penalty + scale * self.config.membership_overlap_weight * membership_overlap_penalty(
                 self.model,
                 max_overlap=self.config.membership_max_overlap,
             )
         if self.config.membership_coverage_weight > 0.0:
-            penalty = penalty + self.config.membership_coverage_weight * membership_coverage_penalty(
+            penalty = penalty + scale * self.config.membership_coverage_weight * membership_coverage_penalty(
                 self.model,
                 min_coverage=self.config.membership_min_coverage,
             )
+        if self.config.block_gate_l1_weight > 0.0:
+            penalty = penalty + scale * self.config.block_gate_l1_weight * block_gate_l1_penalty(self.model)
         return penalty
 
     def _iter_batches(self, inputs: Tensor, targets: Tensor) -> Iterable[tuple[Tensor, Tensor]]:

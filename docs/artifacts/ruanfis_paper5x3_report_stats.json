@@ -1,0 +1,306 @@
+{
+  "generated_utc": "2026-04-21T22:54:51Z",
+  "source_report": "docs/artifacts/ruanfis_paper5x3_report.json",
+  "model_family_filter": "ruanfis",
+  "selected_models": [
+    "ruanfis_hierarchical_anfis",
+    "ruanfis_refined_deep",
+    "ruanfis_shallow",
+    "ruanfis_stacked_anfis"
+  ],
+  "confidence": 0.95,
+  "alpha": 0.05,
+  "n_permutations": 5000,
+  "bootstrap_samples": 1000,
+  "random_seed": 42,
+  "dataset_level": {
+    "n_blocks": 5,
+    "n_datasets": 5,
+    "n_models": 4,
+    "datasets": [
+      "breast_cancer",
+      "diabetes",
+      "digits_binary",
+      "linnerud_weight",
+      "wine_binary"
+    ],
+    "block_metric_map": {
+      "diabetes": "rmse",
+      "linnerud_weight": "rmse",
+      "breast_cancer": "f1",
+      "wine_binary": "f1",
+      "digits_binary": "f1"
+    },
+    "friedman": {
+      "chi2": 2.039999999999992,
+      "p_value": 0.6326734653069386,
+      "alpha": 0.05,
+      "reject_h0_alpha": false,
+      "p_value_method": "permutation(5000)"
+    },
+    "rank_summary": [
+      {
+        "model": "ruanfis_hierarchical_anfis",
+        "avg_rank": 2.0,
+        "std_rank": 1.0,
+        "ci_low": 1.2,
+        "ci_high": 2.8,
+        "wins": 2
+      },
+      {
+        "model": "ruanfis_stacked_anfis",
+        "avg_rank": 2.2,
+        "std_rank": 1.3038404810405297,
+        "ci_low": 1.2,
+        "ci_high": 3.2,
+        "wins": 2
+      },
+      {
+        "model": "ruanfis_refined_deep",
+        "avg_rank": 2.8,
+        "std_rank": 0.8366600265340756,
+        "ci_low": 2.2,
+        "ci_high": 3.4,
+        "wins": 0
+      },
+      {
+        "model": "ruanfis_shallow",
+        "avg_rank": 3.0,
+        "std_rank": 1.4142135623730951,
+        "ci_low": 1.8,
+        "ci_high": 4.0,
+        "wins": 1
+      }
+    ],
+    "pairwise_wilcoxon_holm": [
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_refined_deep",
+        "n_blocks": 5,
+        "wilcoxon_stat": 2.5,
+        "p_value": 0.3125,
+        "n_nonzero_pairs": 5,
+        "mean_rank_a": 2.0,
+        "mean_rank_b": 2.8,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 5,
+        "wilcoxon_stat": 3.5,
+        "p_value": 0.375,
+        "n_nonzero_pairs": 5,
+        "mean_rank_a": 2.0,
+        "mean_rank_b": 3.0,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 5,
+        "wilcoxon_stat": 6.5,
+        "p_value": 1.0,
+        "n_nonzero_pairs": 5,
+        "mean_rank_a": 2.0,
+        "mean_rank_b": 2.2,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 5,
+        "wilcoxon_stat": 6.5,
+        "p_value": 1.0,
+        "n_nonzero_pairs": 5,
+        "mean_rank_a": 2.8,
+        "mean_rank_b": 3.0,
+        "better_model_by_avg_rank": "ruanfis_refined_deep",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 5,
+        "wilcoxon_stat": 5.0,
+        "p_value": 0.6875,
+        "n_nonzero_pairs": 5,
+        "mean_rank_a": 2.8,
+        "mean_rank_b": 2.2,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_shallow",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 5,
+        "wilcoxon_stat": 4.5,
+        "p_value": 0.5625,
+        "n_nonzero_pairs": 5,
+        "mean_rank_a": 3.0,
+        "mean_rank_b": 2.2,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      }
+    ]
+  },
+  "block_level": {
+    "n_blocks": 15,
+    "n_datasets": 5,
+    "n_models": 4,
+    "datasets": [
+      "breast_cancer",
+      "diabetes",
+      "digits_binary",
+      "linnerud_weight",
+      "wine_binary"
+    ],
+    "block_metric_map": {
+      "diabetes/seed=19": "rmse",
+      "diabetes/seed=23": "rmse",
+      "diabetes/seed=29": "rmse",
+      "linnerud_weight/seed=19": "rmse",
+      "linnerud_weight/seed=23": "rmse",
+      "linnerud_weight/seed=29": "rmse",
+      "breast_cancer/seed=19": "f1",
+      "breast_cancer/seed=23": "f1",
+      "breast_cancer/seed=29": "f1",
+      "wine_binary/seed=19": "f1",
+      "wine_binary/seed=23": "f1",
+      "wine_binary/seed=29": "f1",
+      "digits_binary/seed=19": "f1",
+      "digits_binary/seed=23": "f1",
+      "digits_binary/seed=29": "f1"
+    },
+    "friedman": {
+      "chi2": 4.572413793103465,
+      "p_value": 0.21415716856628675,
+      "alpha": 0.05,
+      "reject_h0_alpha": false,
+      "p_value_method": "permutation(5000)"
+    },
+    "rank_summary": [
+      {
+        "model": "ruanfis_hierarchical_anfis",
+        "avg_rank": 2.1333333333333333,
+        "std_rank": 1.0600988273786194,
+        "ci_low": 1.6333333333333333,
+        "ci_high": 2.6666666666666665,
+        "wins": 4
+      },
+      {
+        "model": "ruanfis_stacked_anfis",
+        "avg_rank": 2.1666666666666665,
+        "std_rank": 1.2051476890327395,
+        "ci_low": 1.5666666666666667,
+        "ci_high": 2.7666666666666666,
+        "wins": 5
+      },
+      {
+        "model": "ruanfis_shallow",
+        "avg_rank": 2.8333333333333335,
+        "std_rank": 1.0293317295817757,
+        "ci_low": 2.3333333333333335,
+        "ci_high": 3.3333333333333335,
+        "wins": 1
+      },
+      {
+        "model": "ruanfis_refined_deep",
+        "avg_rank": 2.8666666666666667,
+        "std_rank": 1.0082988974836116,
+        "ci_low": 2.4,
+        "ci_high": 3.3666666666666667,
+        "wins": 1
+      }
+    ],
+    "pairwise_wilcoxon_holm": [
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_refined_deep",
+        "n_blocks": 15,
+        "wilcoxon_stat": 21.0,
+        "p_value": 0.08544921875,
+        "n_nonzero_pairs": 13,
+        "mean_rank_a": 2.1333333333333333,
+        "mean_rank_b": 2.8666666666666667,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 0.5126953125,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 15,
+        "wilcoxon_stat": 35.5,
+        "p_value": 0.16522216796875,
+        "n_nonzero_pairs": 15,
+        "mean_rank_a": 2.1333333333333333,
+        "mean_rank_b": 2.8333333333333335,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 0.7452392578125,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_hierarchical_anfis",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 15,
+        "wilcoxon_stat": 39.0,
+        "p_value": 0.665771484375,
+        "n_nonzero_pairs": 13,
+        "mean_rank_a": 2.1333333333333333,
+        "mean_rank_b": 2.1666666666666665,
+        "better_model_by_avg_rank": "ruanfis_hierarchical_anfis",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_shallow",
+        "n_blocks": 15,
+        "wilcoxon_stat": 57.0,
+        "p_value": 0.9111328125,
+        "n_nonzero_pairs": 15,
+        "mean_rank_a": 2.8666666666666667,
+        "mean_rank_b": 2.8333333333333335,
+        "better_model_by_avg_rank": "ruanfis_shallow",
+        "p_value_holm": 1.0,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_refined_deep",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 15,
+        "wilcoxon_stat": 37.0,
+        "p_value": 0.1990966796875,
+        "n_nonzero_pairs": 15,
+        "mean_rank_a": 2.8666666666666667,
+        "mean_rank_b": 2.1666666666666665,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 0.7452392578125,
+        "reject_h0_alpha": false
+      },
+      {
+        "model_a": "ruanfis_shallow",
+        "model_b": "ruanfis_stacked_anfis",
+        "n_blocks": 15,
+        "wilcoxon_stat": 29.0,
+        "p_value": 0.1490478515625,
+        "n_nonzero_pairs": 14,
+        "mean_rank_a": 2.8333333333333335,
+        "mean_rank_b": 2.1666666666666665,
+        "better_model_by_avg_rank": "ruanfis_stacked_anfis",
+        "p_value_holm": 0.7452392578125,
+        "reject_h0_alpha": false
+      }
+    ]
+  }
+}

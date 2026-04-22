@@ -141,3 +141,13 @@ def membership_coverage_penalty(
         coverage = values.max(dim=1).values.mean()
         total = total + torch.relu(target_coverage - coverage)
     return total
+
+
+def block_gate_l1_penalty(module: nn.Module) -> Tensor:
+    total = _zero_for(module)
+    for submodule in module.modules():
+        block_gate_logits = getattr(submodule, "block_gate_logits", None)
+        if block_gate_logits is None:
+            continue
+        total = total + torch.sigmoid(block_gate_logits).sum()
+    return total
