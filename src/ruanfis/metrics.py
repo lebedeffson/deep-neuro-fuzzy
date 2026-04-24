@@ -45,6 +45,7 @@ def binary_classification_metrics(
     probabilities = torch.sigmoid(preds)
     predicted_labels = (probabilities >= threshold).to(dtype=gold.dtype)
     target_labels = (gold >= 0.5).to(dtype=gold.dtype)
+    target_labels_bool = target_labels >= 0.5
 
     accuracy = (predicted_labels == target_labels).float().mean().item()
     true_positive = ((predicted_labels == 1) & (target_labels == 1)).sum().item()
@@ -54,12 +55,48 @@ def binary_classification_metrics(
     precision = true_positive / (true_positive + false_positive + 1e-12)
     recall = true_positive / (true_positive + false_negative + 1e-12)
     f1 = 2.0 * precision * recall / (precision + recall + 1e-12)
+    brier = (probabilities - target_labels).pow(2).mean().item()
+    probabilities_clipped = probabilities.clamp(1e-7, 1.0 - 1e-7)
+    log_loss = (
+        -(target_labels * torch.log(probabilities_clipped) + (1.0 - target_labels) * torch.log(1.0 - probabilities_clipped))
+    ).mean().item()
+
+    positive_count = int(target_labels_bool.sum().item())
+    negative_count = int((~target_labels_bool).sum().item())
+
+    if positive_count == 0 or negative_count == 0:
+        roc_auc = 0.5
+    else:
+        sorted_indices = torch.argsort(probabilities, descending=True)
+        sorted_targets = target_labels_bool.index_select(0, sorted_indices).to(dtype=torch.float32)
+        true_positive_cum = torch.cumsum(sorted_targets, dim=0)
+        false_positive_cum = torch.cumsum(1.0 - sorted_targets, dim=0)
+        tpr = torch.cat(
+            [torch.zeros(1, dtype=torch.float32, device=sorted_targets.device), true_positive_cum / float(positive_count)]
+        )
+        fpr = torch.cat(
+            [torch.zeros(1, dtype=torch.float32, device=sorted_targets.device), false_positive_cum / float(negative_count)]
+        )
+        roc_auc = torch.trapezoid(tpr, fpr).item()
+
+    if positive_count == 0:
+        pr_auc = 0.0
+    else:
+        sorted_indices = torch.argsort(probabilities, descending=True)
+        sorted_targets = target_labels_bool.index_select(0, sorted_indices).to(dtype=torch.float32)
+        ranks = torch.arange(1, sorted_targets.numel() + 1, dtype=torch.float32, device=sorted_targets.device)
+        precision_at_k = torch.cumsum(sorted_targets, dim=0) / ranks
+        pr_auc = (precision_at_k * sorted_targets).sum().item() / float(positive_count)
 
     return {
         "accuracy": float(accuracy),
         "precision": float(precision),
         "recall": float(recall),
         "f1": float(f1),
+        "roc_auc": float(roc_auc),
+        "pr_auc": float(pr_auc),
+        "brier": float(brier),
+        "log_loss": float(log_loss),
     }
 
 

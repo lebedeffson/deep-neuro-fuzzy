@@ -1,5 +1,12 @@
 # Final Full Comparison (2026-04-19)
 
+## Update (2026-04-22, latest core5)
+
+Актуальная финальная таблица по `diabetes/linnerud/breast/wine/digits` после последних улучшений DFFL:
+
+- `docs/artifacts/final_results_table_2026-04-22.md`
+- `docs/artifacts/dffl_improvement_round_2026-04-22.md`
+
 Источник сырых артефактов: `artifacts/benchmarks/final_full_2026-04-19` (локально, не в git).
 
 # Final Benchmark Package (2026-04-19)
@@ -39,4 +46,3 @@ Source: `pack2_cfgA_auto_lr25_gpu_rtx4060` (full comparison: all RUANFIS models 
 | ruanfis_refined_deep | ruanfis | 0.7671 |
 | logistic_regression | sklearn | 0.7540 |
 | ruanfis_shallow | ruanfis | 0.7408 |
-

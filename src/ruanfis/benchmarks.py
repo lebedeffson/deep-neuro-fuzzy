@@ -21,7 +21,7 @@ from torch import Tensor, nn
 from .metrics import TaskType, compute_metrics
 from .model import DeepFuzzyFeatureModel
 from .stacked import StackedAnfisModel
-from .trainer import FuzzyTrainer, TrainingConfig
+from .trainer import FuzzyTrainer, TrainingConfig, predict_with_optional_residual_head
 
 try:
     from xgboost import XGBClassifier, XGBRegressor
@@ -338,6 +338,7 @@ def evaluate_trained_model(
     classification_threshold: float = 0.5,
     rule_probability_threshold: float = 0.5,
     top_k_rules: int | None = None,
+    prediction_postprocessor: Callable[[Tensor], Tensor] | None = None,
 ) -> BenchmarkEntryResult:
     train_features = _to_feature_tensor(train_inputs)
     test_features = _to_feature_tensor(test_inputs)
@@ -348,14 +349,19 @@ def evaluate_trained_model(
 
     model.eval()
     with torch.no_grad():
-        train_predictions = model(
+        train_predictions = predict_with_optional_residual_head(
+            model,
             train_features.to(device=device, dtype=torch.float32),
             top_k_rules=top_k_rules,
         ).detach().cpu()
-        test_predictions = model(
+        test_predictions = predict_with_optional_residual_head(
+            model,
             test_features.to(device=device, dtype=torch.float32),
             top_k_rules=top_k_rules,
         ).detach().cpu()
+        if prediction_postprocessor is not None:
+            train_predictions = prediction_postprocessor(train_predictions)
+            test_predictions = prediction_postprocessor(test_predictions)
 
     structural_metrics: dict[str, float] = {}
     explainability_metrics: dict[str, float] = {}

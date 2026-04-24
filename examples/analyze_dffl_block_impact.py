@@ -172,6 +172,8 @@ def main() -> None:
             rule_sparsity_weight=0.0,
             stage_selection_metric="auto",
             stage_selection_threshold=args.classification_threshold,
+            rule_swap_ratio=profile.stagewise_rule_swap_ratio,
+            rule_swap_min_keep=profile.stagewise_rule_swap_min_keep,
         ),
         training_config=TrainingConfig(
             task_type=spec.task_type,
@@ -190,6 +192,9 @@ def main() -> None:
             rule_sparsity_weight=profile.rule_sparsity_weight,
             rule_length_weight=profile.rule_length_weight,
             decision_usage_balance_weight=profile.decision_usage_balance_weight,
+            block_agreement_weight=profile.block_agreement_weight,
+            block_agreement_target_corr=profile.block_agreement_target_corr,
+            block_agreement_stage_limit=profile.block_agreement_stage_limit,
             prune_after_fit=False,
             device=args.device,
         ),

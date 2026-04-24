@@ -228,7 +228,16 @@ def generate_prototype_rule_base(
     top_term_indices: list[Tensor] = []
     for membership in membership_scores:
         k = min(top_terms_per_variable, membership.size(1))
-        values, indices = torch.topk(membership, k=k, dim=1)
+        term_indices = torch.arange(
+            membership.size(1),
+            device=membership.device,
+            dtype=membership.dtype,
+        )
+        # Deterministic tie-break: prefer lower term index when scores are equal.
+        adjusted_membership = membership - (1e-7 * term_indices.unsqueeze(0))
+        sorted_indices = torch.argsort(adjusted_membership, dim=1, descending=True)
+        indices = sorted_indices[:, :k]
+        values = membership.gather(dim=1, index=indices)
         top_term_values.append(values)
         top_term_indices.append(indices)
 
@@ -239,7 +248,14 @@ def generate_prototype_rule_base(
             [top_term_values[variable_index][sample_index, 0].item() for variable_index in range(len(variables))],
             dtype=torch.float32,
         )
-        pooled_variables = torch.argsort(variable_strengths, descending=True).tolist()[:pool_size]
+        variable_indices = torch.arange(
+            len(variables),
+            device=variable_strengths.device,
+            dtype=variable_strengths.dtype,
+        )
+        # Deterministic tie-break: prefer lower feature index when strengths are equal.
+        adjusted_strengths = variable_strengths - (1e-7 * variable_indices)
+        pooled_variables = torch.argsort(adjusted_strengths, descending=True).tolist()[:pool_size]
 
         for arity in range(1, max_arity + 1):
             for variable_indices in combinations(pooled_variables, arity):

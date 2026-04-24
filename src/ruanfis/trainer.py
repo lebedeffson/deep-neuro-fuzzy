@@ -6,6 +6,7 @@ from typing import Iterable
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from .blocks import BaseFuzzyRuleLayer
 from .metrics import TaskType, compute_metrics
@@ -36,10 +37,16 @@ class TrainingConfig:
     classification_threshold: float = 0.5
     binary_auto_pos_weight: bool = False
     binary_pos_weight: float | None = None
+    binary_loss_name: str = "bce"  # "bce" | "focal"
+    binary_focal_gamma: float = 2.0
+    binary_focal_alpha: float | None = None
+    binary_class_balanced_beta: float | None = None
     binary_soft_f1_weight: float = 0.0
     binary_soft_f1_epsilon: float = 1e-6
     regression_loss: str = "mse"  # "mse" | "huber"
     huber_delta: float = 1.0
+    regression_linear_residual_head: bool = False
+    regression_linear_residual_l2: float = 1e-6
     monitor_metric: str | None = None
     monitor_mode: str | None = None  # "min" | "max"; defaults to "min" when metric is not set
     top_k_rules: int | None = None
@@ -55,6 +62,9 @@ class TrainingConfig:
     membership_min_coverage: float = 0.6
     decision_usage_balance_weight: float = 0.0
     block_gate_l1_weight: float = 0.0
+    block_agreement_weight: float = 0.0
+    block_agreement_target_corr: float = 0.2
+    block_agreement_stage_limit: int = 1
     regularization_warmup_epochs: int = 0
     top_k_warmup_epochs: int = 0
     prune_after_fit: bool = False
@@ -104,6 +114,25 @@ class TrainingResult:
     validation_loss: float | None
     validation_metrics: dict[str, float] | None
     pruning_report: PruningReport | None
+
+
+def predict_with_optional_residual_head(
+    model: nn.Module,
+    inputs: Tensor,
+    *,
+    top_k_rules: int | None = None,
+) -> Tensor:
+    predictions = model(inputs, top_k_rules=top_k_rules)
+    if not bool(getattr(model, "_linear_residual_enabled", False)):
+        return predictions
+    residual_weights = getattr(model, "_linear_residual_weights", None)
+    residual_bias = getattr(model, "_linear_residual_bias", None)
+    if residual_weights is None or residual_bias is None:
+        return predictions
+    residual_weights = residual_weights.to(device=inputs.device, dtype=inputs.dtype)
+    residual_bias = residual_bias.to(device=inputs.device, dtype=inputs.dtype)
+    residual = inputs @ residual_weights.unsqueeze(-1) + residual_bias.view(1, 1)
+    return predictions + residual
 
 
 def soft_prune_rule_layers(
@@ -158,6 +187,8 @@ class FuzzyTrainer:
         self.model = model
         self.config = config
         self.loss_fn = loss_fn or self._default_loss(config.task_type)
+        self._binary_pos_weight_tensor: Tensor | None = None
+        self._binary_focal_alpha_effective: float | None = self.config.binary_focal_alpha
 
     def fit(
         self,
@@ -180,18 +211,48 @@ class FuzzyTrainer:
 
         if self.config.top_k_rules is not None and self.config.top_k_rules <= 0:
             raise ValueError("top_k_rules must be positive when provided.")
+        if self.config.block_agreement_weight < 0.0:
+            raise ValueError("block_agreement_weight must be non-negative.")
+        if not -1.0 <= self.config.block_agreement_target_corr <= 1.0:
+            raise ValueError("block_agreement_target_corr must be in [-1, 1].")
+        if self.config.block_agreement_stage_limit < 0:
+            raise ValueError("block_agreement_stage_limit must be non-negative.")
 
         if self.config.task_type == "binary_classification":
+            if self.config.binary_loss_name not in {"bce", "focal"}:
+                raise ValueError("binary_loss_name must be 'bce' or 'focal'.")
             effective_pos_weight: float | None = None
+            positive_count = 0.0
+            negative_count = 0.0
+            flat_targets = train_targets.reshape(-1)
+            positive_count = float(flat_targets.sum().item())
+            total_count = float(flat_targets.numel())
+            negative_count = total_count - positive_count
             if self.config.binary_auto_pos_weight:
-                flat_targets = train_targets.reshape(-1)
-                positive_count = float(flat_targets.sum().item())
-                total_count = float(flat_targets.numel())
-                negative_count = total_count - positive_count
                 if positive_count > 0.0 and negative_count > 0.0:
                     effective_pos_weight = negative_count / positive_count
             elif self.config.binary_pos_weight is not None:
                 effective_pos_weight = float(self.config.binary_pos_weight)
+
+            if self.config.binary_class_balanced_beta is not None:
+                beta = float(self.config.binary_class_balanced_beta)
+                if not 0.0 <= beta < 1.0:
+                    raise ValueError("binary_class_balanced_beta must be in [0, 1).")
+                pos_effective = 1.0 if positive_count <= 0.0 else (1.0 - beta) / (1.0 - beta**positive_count + 1e-12)
+                neg_effective = 1.0 if negative_count <= 0.0 else (1.0 - beta) / (1.0 - beta**negative_count + 1e-12)
+                class_balanced_ratio = pos_effective / (neg_effective + 1e-12)
+                if effective_pos_weight is None:
+                    effective_pos_weight = class_balanced_ratio
+                else:
+                    effective_pos_weight *= class_balanced_ratio
+                if self.config.binary_focal_alpha is None and pos_effective > 0.0 and neg_effective > 0.0:
+                    # Auto-alpha from class-balanced weighting.
+                    auto_alpha = pos_effective / (pos_effective + neg_effective)
+                    self._binary_focal_alpha_effective = float(auto_alpha)
+                else:
+                    self._binary_focal_alpha_effective = self.config.binary_focal_alpha
+            else:
+                self._binary_focal_alpha_effective = self.config.binary_focal_alpha
 
             if effective_pos_weight is not None and effective_pos_weight > 0.0:
                 pos_weight_tensor = torch.tensor(
@@ -199,8 +260,10 @@ class FuzzyTrainer:
                     device=device,
                     dtype=train_targets.dtype,
                 )
+                self._binary_pos_weight_tensor = pos_weight_tensor
                 self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
             else:
+                self._binary_pos_weight_tensor = None
                 self.loss_fn = nn.BCEWithLogitsLoss()
 
         optimizer = torch.optim.Adam(
@@ -275,6 +338,12 @@ class FuzzyTrainer:
 
         self.model.load_state_dict(best_state)
 
+        if self.config.task_type == "regression":
+            if self.config.regression_linear_residual_head:
+                self._fit_regression_linear_residual_head(train_inputs, train_targets)
+            else:
+                self._clear_regression_linear_residual_head()
+
         pruning_report = None
         if self.config.prune_after_fit:
             pruning_report = soft_prune_rule_layers(
@@ -317,7 +386,11 @@ class FuzzyTrainer:
         self.model.eval()
         top_k_rules = self.config.top_k_rules if top_k_rules_override is None else top_k_rules_override
         with torch.no_grad():
-            predictions = self.model(inputs, top_k_rules=top_k_rules)
+            predictions = predict_with_optional_residual_head(
+                self.model,
+                inputs,
+                top_k_rules=top_k_rules,
+            )
             aligned_targets = self._align_targets(predictions, targets)
             loss = self.loss_fn(predictions, aligned_targets).item()
             metrics = compute_metrics(
@@ -369,7 +442,16 @@ class FuzzyTrainer:
             optimizer.zero_grad()
             predictions = self.model(batch_inputs, top_k_rules=top_k_rules)
             aligned_targets = self._align_targets(predictions, batch_targets)
-            task_loss = self.loss_fn(predictions, aligned_targets)
+            if self.config.task_type == "binary_classification" and self.config.binary_loss_name == "focal":
+                task_loss = self._binary_focal_loss(
+                    predictions,
+                    aligned_targets,
+                    gamma=self.config.binary_focal_gamma,
+                    alpha=self._binary_focal_alpha_effective,
+                    pos_weight=self._binary_pos_weight_tensor,
+                )
+            else:
+                task_loss = self.loss_fn(predictions, aligned_targets)
             if (
                 self.config.task_type == "binary_classification"
                 and self.config.binary_soft_f1_weight > 0.0
@@ -388,6 +470,12 @@ class FuzzyTrainer:
                     regularization_scale
                     * self.config.decision_usage_balance_weight
                     * self._decision_usage_balance_penalty(batch_inputs, top_k_rules=top_k_rules)
+                )
+            if self.config.block_agreement_weight > 0.0:
+                total_loss = total_loss + (
+                    regularization_scale
+                    * self.config.block_agreement_weight
+                    * self._block_agreement_penalty(batch_inputs, top_k_rules=top_k_rules)
                 )
             total_loss.backward()
 
@@ -430,6 +518,85 @@ class FuzzyTrainer:
         )
         return 1.0 - soft_f1.mean()
 
+    def _binary_focal_loss(
+        self,
+        logits: Tensor,
+        targets: Tensor,
+        *,
+        gamma: float,
+        alpha: float | None,
+        pos_weight: Tensor | None,
+    ) -> Tensor:
+        if gamma < 0.0:
+            raise ValueError("binary_focal_gamma must be non-negative.")
+        targets = targets.to(dtype=logits.dtype)
+        if targets.ndim == 1:
+            targets = targets.unsqueeze(-1)
+        bce = F.binary_cross_entropy_with_logits(
+            logits,
+            targets,
+            reduction="none",
+            pos_weight=pos_weight,
+        )
+        probabilities = torch.sigmoid(logits)
+        pt = probabilities * targets + (1.0 - probabilities) * (1.0 - targets)
+        focal_weight = (1.0 - pt).clamp_min(1e-8).pow(gamma)
+        loss = focal_weight * bce
+        if alpha is not None:
+            alpha = float(alpha)
+            if not 0.0 <= alpha <= 1.0:
+                raise ValueError("binary_focal_alpha must be in [0, 1].")
+            alpha_tensor = logits.new_tensor(alpha)
+            alpha_weight = alpha_tensor * targets + (1.0 - alpha_tensor) * (1.0 - targets)
+            loss = loss * alpha_weight
+        return loss.mean()
+
+    def _clear_regression_linear_residual_head(self) -> None:
+        setattr(self.model, "_linear_residual_enabled", False)
+        if "_linear_residual_weights" in dict(self.model.named_buffers()):
+            delattr(self.model, "_linear_residual_weights")
+        if "_linear_residual_bias" in dict(self.model.named_buffers()):
+            delattr(self.model, "_linear_residual_bias")
+
+    def _fit_regression_linear_residual_head(self, train_inputs: Tensor, train_targets: Tensor) -> None:
+        self.model.eval()
+        with torch.no_grad():
+            base_predictions = self.model(train_inputs)
+            aligned_targets = self._align_targets(base_predictions, train_targets)
+            residual_targets = aligned_targets - base_predictions
+            design = torch.cat(
+                [
+                    train_inputs.to(dtype=base_predictions.dtype),
+                    torch.ones(
+                        (train_inputs.size(0), 1),
+                        device=train_inputs.device,
+                        dtype=base_predictions.dtype,
+                    ),
+                ],
+                dim=1,
+            )
+            xtx = design.transpose(0, 1) @ design
+            l2 = max(float(self.config.regression_linear_residual_l2), 0.0)
+            if l2 > 0.0:
+                xtx = xtx + l2 * torch.eye(xtx.size(0), device=xtx.device, dtype=xtx.dtype)
+            xty = design.transpose(0, 1) @ residual_targets
+            try:
+                solution = torch.linalg.solve(xtx, xty)
+            except RuntimeError:
+                solution = torch.linalg.pinv(xtx) @ xty
+            weights = solution[:-1, :].reshape(-1)
+            bias = solution[-1, :].reshape(() if solution.size(1) == 1 else (solution.size(1),))
+
+        if "_linear_residual_weights" in dict(self.model.named_buffers()):
+            self.model._linear_residual_weights = weights.detach()
+        else:
+            self.model.register_buffer("_linear_residual_weights", weights.detach(), persistent=False)
+        if "_linear_residual_bias" in dict(self.model.named_buffers()):
+            self.model._linear_residual_bias = bias.detach()
+        else:
+            self.model.register_buffer("_linear_residual_bias", bias.detach(), persistent=False)
+        setattr(self.model, "_linear_residual_enabled", True)
+
     def _decision_usage_balance_penalty(self, inputs: Tensor, *, top_k_rules: int | None) -> Tensor:
         if not hasattr(self.model, "decision_layer") or not hasattr(self.model, "forward_features"):
             return next(self.model.parameters()).new_tensor(0.0)
@@ -446,6 +613,65 @@ class FuzzyTrainer:
         usage = normalized_rule_weights.mean(dim=0)
         uniform = torch.full_like(usage, fill_value=1.0 / float(usage.numel()))
         return torch.mean((usage - uniform) ** 2)
+
+    def _block_agreement_penalty(self, inputs: Tensor, *, top_k_rules: int | None) -> Tensor:
+        if not hasattr(self.model, "stages"):
+            return next(self.model.parameters()).new_tensor(0.0)
+
+        stages = getattr(self.model, "stages")
+        if not isinstance(stages, nn.ModuleList) or len(stages) == 0:
+            return next(self.model.parameters()).new_tensor(0.0)
+
+        features = inputs
+        agreement_penalty = next(self.model.parameters()).new_tensor(0.0)
+        counted_stages = 0
+        stage_limit = int(self.config.block_agreement_stage_limit)
+        if stage_limit == 0:
+            return agreement_penalty
+
+        for stage_index, stage in enumerate(stages):
+            if stage_limit > 0 and stage_index >= stage_limit:
+                features = stage(features, top_k_rules=top_k_rules)
+                continue
+            if not hasattr(stage, "blocks"):
+                features = stage(features, top_k_rules=top_k_rules)
+                continue
+
+            block_outputs: list[Tensor] = []
+            block_activities: list[Tensor] = []
+            for block_index, block in enumerate(stage.blocks):
+                current_block = block(features, top_k_rules=top_k_rules)
+                if hasattr(stage, "_block_gate"):
+                    gate = stage._block_gate(block_index, current_block)
+                    current_block = current_block * gate
+                block_outputs.append(current_block)
+                block_activities.append(current_block.abs().mean(dim=1))
+
+            features = torch.cat(block_outputs, dim=1)
+
+            if len(block_activities) <= 1:
+                continue
+            activity = torch.stack(block_activities, dim=1)
+            centered = activity - activity.mean(dim=0, keepdim=True)
+            std = centered.std(dim=0, unbiased=False, keepdim=True).clamp_min(1e-6)
+            standardized = centered / std
+            corr = standardized.transpose(0, 1) @ standardized
+            corr = corr / float(max(standardized.size(0), 1))
+            n_blocks = int(corr.size(0))
+            if n_blocks <= 1:
+                continue
+            mask = ~torch.eye(n_blocks, dtype=torch.bool, device=corr.device)
+            off_diag = corr[mask]
+            if off_diag.numel() == 0:
+                continue
+            target = float(self.config.block_agreement_target_corr)
+            stage_penalty = torch.relu(target - off_diag).mean()
+            agreement_penalty = agreement_penalty + stage_penalty
+            counted_stages += 1
+
+        if counted_stages == 0:
+            return agreement_penalty
+        return agreement_penalty / float(counted_stages)
 
     def _resolve_monitor_mode(self) -> str:
         if self.config.monitor_mode is not None:

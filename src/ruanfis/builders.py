@@ -125,8 +125,48 @@ def _maybe_subsample_inputs(inputs: Tensor, sample_size: int | None) -> Tensor:
         return inputs
     if sample_size <= 0:
         raise ValueError("prototype_sample_size must be positive when provided.")
-    indices = torch.randperm(inputs.size(0), device=inputs.device)[:sample_size]
-    return inputs.index_select(dim=0, index=indices)
+    # Deterministic stratified-like sampling: preserve coverage across the data manifold
+    # without introducing run-to-run randomness in prototype rule generation.
+    if inputs.ndim != 2:
+        raise ValueError(f"Expected prototype inputs to be 2D, got shape {tuple(inputs.shape)}.")
+    n_samples = inputs.size(0)
+    n_features = inputs.size(1)
+    if n_features <= 0:
+        raise ValueError("prototype inputs must contain at least one feature.")
+
+    # Build a stable 1D score for sorting. We use a fixed weighted projection over
+    # the first few features to avoid expensive decomposition steps.
+    projection_dim = min(n_features, 8)
+    feature_weights = torch.linspace(
+        1.0,
+        2.0,
+        steps=projection_dim,
+        device=inputs.device,
+        dtype=inputs.dtype,
+    )
+    projection_scores = inputs[:, :projection_dim] @ feature_weights
+    sorted_indices = torch.argsort(projection_scores, descending=False)
+
+    # Take one representative from each quantile bucket for broad coverage.
+    bin_edges = torch.linspace(
+        0,
+        n_samples,
+        steps=sample_size + 1,
+        device=inputs.device,
+        dtype=torch.float64,
+    )
+    selected_positions: list[int] = []
+    for index in range(sample_size):
+        left = int(torch.floor(bin_edges[index]).item())
+        right = int(torch.floor(bin_edges[index + 1]).item())
+        if right <= left:
+            right = min(n_samples, left + 1)
+        center = (left + right - 1) // 2
+        center = max(0, min(n_samples - 1, center))
+        selected_positions.append(center)
+
+    selected_indices = sorted_indices[torch.tensor(selected_positions, device=inputs.device, dtype=torch.long)]
+    return inputs.index_select(dim=0, index=selected_indices)
 
 
 def _resolve_module_device(module: torch.nn.Module) -> torch.device:

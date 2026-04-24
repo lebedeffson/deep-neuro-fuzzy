@@ -299,6 +299,9 @@ def main() -> None:
         rule_length_weight=profile.rule_length_weight,
         decision_usage_balance_weight=profile.decision_usage_balance_weight,
         block_gate_l1_weight=profile.block_gate_l1_weight,
+        block_agreement_weight=profile.block_agreement_weight,
+        block_agreement_target_corr=profile.block_agreement_target_corr,
+        block_agreement_stage_limit=profile.block_agreement_stage_limit,
         regularization_warmup_epochs=max(1, args.max_epochs // 3),
         top_k_warmup_epochs=(max(1, args.max_epochs // 4) if profile.top_k_rules is not None else 0),
         device=args.device,
@@ -332,6 +335,8 @@ def main() -> None:
                 shuffle=True,
                 stage_selection_metric="auto",
                 stage_selection_threshold=args.classification_threshold,
+                rule_swap_ratio=profile.stagewise_rule_swap_ratio,
+                rule_swap_min_keep=profile.stagewise_rule_swap_min_keep,
             ),
             training_config=train_cfg,
             refinement_loop_config=RefinementLoopConfig(

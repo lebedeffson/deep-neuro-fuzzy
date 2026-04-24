@@ -1,3 +1,6 @@
+> Note (2026-04-22): this file is a profile-ablation snapshot from an earlier 5x3 run.
+> Latest final merged results are in `docs/artifacts/final_results_table_2026-04-22.md`.
+
 | DFFL profile | Avg Rank | Wins | Avg Total Rules | Avg Active Rules | Avg Active Rule Jaccard | Avg Decision Rule Jaccard |
 | --- | --- | --- | --- | --- | --- | --- |
 | quality_auto | 2.800 | 0 | 96.73 | 46.33 | 0.2626 | 0.1836 |

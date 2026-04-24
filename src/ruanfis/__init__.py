@@ -142,6 +142,7 @@ from .trainer import (
     PruningReport,
     TrainingConfig,
     TrainingResult,
+    predict_with_optional_residual_head,
     soft_prune_rule_layers,
 )
 
@@ -252,6 +253,7 @@ __all__ = [
     "initialize_decision_layer_from_samples",
     "initialize_transparent_block_from_samples",
     "regression_metrics",
+    "predict_with_optional_residual_head",
     "rule_sparsity_penalty",
     "run_multi_seed_benchmark",
     "run_tabular_benchmark",

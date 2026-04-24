@@ -60,6 +60,9 @@ class StagewisePretrainingConfig:
     classification_target_clip: float = 0.05
     stage_selection_metric: str = "loss"  # "auto" | "loss" | "f1"
     stage_selection_threshold: float = 0.5
+    # Keep rule budget fixed while allowing periodic structure refresh from new candidates.
+    rule_swap_ratio: float = 0.0
+    rule_swap_min_keep: int = 0
 
 
 def _resolve_device(
@@ -268,6 +271,115 @@ def _compute_stage_reference_inputs(
             current = stage(current)
     reference_inputs.append(current)
     return tuple(reference_inputs)
+
+
+def _rule_signature_from_layer_rule(rule_spec) -> tuple[tuple[int, int], ...]:
+    return tuple((int(ant.variable_index), int(ant.term_index)) for ant in rule_spec.antecedents)
+
+
+def _select_rule_pairs_to_keep(
+    *,
+    reference_layer: TransparentFuzzyBlock | SugenoDecisionLayer,
+    target_layer: TransparentFuzzyBlock | SugenoDecisionLayer,
+    keep_count: int,
+) -> list[tuple[int, int]]:
+    reference_index_by_signature = {
+        _rule_signature_from_layer_rule(rule): int(index)
+        for index, rule in enumerate(reference_layer.rule_base.rules)
+    }
+    candidates: list[tuple[float, int, int]] = []
+    reference_probabilities = torch.sigmoid(reference_layer.rule_logits.detach())
+    for target_index, target_rule in enumerate(target_layer.rule_base.rules):
+        signature = _rule_signature_from_layer_rule(target_rule)
+        reference_index = reference_index_by_signature.get(signature)
+        if reference_index is None:
+            continue
+        score = float(reference_probabilities[reference_index].item())
+        candidates.append((score, int(reference_index), int(target_index)))
+
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    selected = candidates[: max(0, min(int(keep_count), len(candidates)))]
+    return [(reference_index, target_index) for _, reference_index, target_index in selected]
+
+
+def _copy_transparent_rule_parameters(
+    *,
+    reference_layer: TransparentFuzzyBlock,
+    target_layer: TransparentFuzzyBlock,
+    reference_index: int,
+    target_index: int,
+) -> None:
+    with torch.no_grad():
+        target_layer.rule_logits[target_index].copy_(reference_layer.rule_logits[reference_index])
+        if reference_layer.raw_consequents.shape[1] == target_layer.raw_consequents.shape[1]:
+            target_layer.raw_consequents[target_index].copy_(reference_layer.raw_consequents[reference_index])
+        if (
+            reference_layer.rule_weights is not None
+            and target_layer.rule_weights is not None
+            and reference_layer.rule_weights.shape[1:] == target_layer.rule_weights.shape[1:]
+        ):
+            target_layer.rule_weights[target_index].copy_(reference_layer.rule_weights[reference_index])
+
+
+def _copy_decision_rule_parameters(
+    *,
+    reference_layer: SugenoDecisionLayer,
+    target_layer: SugenoDecisionLayer,
+    reference_index: int,
+    target_index: int,
+) -> None:
+    with torch.no_grad():
+        target_layer.rule_logits[target_index].copy_(reference_layer.rule_logits[reference_index])
+        if reference_layer.rule_bias.shape[1:] == target_layer.rule_bias.shape[1:]:
+            target_layer.rule_bias[target_index].copy_(reference_layer.rule_bias[reference_index])
+        if reference_layer.rule_weights.shape[1:] == target_layer.rule_weights.shape[1:]:
+            target_layer.rule_weights[target_index].copy_(reference_layer.rule_weights[reference_index])
+
+
+def _apply_rule_swap_warmstart(
+    *,
+    reference_layer: TransparentFuzzyBlock | SugenoDecisionLayer | None,
+    target_layer: TransparentFuzzyBlock | SugenoDecisionLayer,
+    config: StagewisePretrainingConfig,
+) -> None:
+    if reference_layer is None:
+        return
+    ratio = float(config.rule_swap_ratio)
+    if ratio <= 0.0:
+        return
+    if ratio > 1.0:
+        raise ValueError("rule_swap_ratio must be in [0, 1].")
+    min_keep = int(config.rule_swap_min_keep)
+    if min_keep < 0:
+        raise ValueError("rule_swap_min_keep must be non-negative.")
+
+    keep_count = int(round((1.0 - ratio) * target_layer.n_rules))
+    keep_count = min(target_layer.n_rules, max(min_keep, keep_count))
+    if keep_count <= 0:
+        return
+
+    pairs = _select_rule_pairs_to_keep(
+        reference_layer=reference_layer,
+        target_layer=target_layer,
+        keep_count=keep_count,
+    )
+    if isinstance(target_layer, TransparentFuzzyBlock) and isinstance(reference_layer, TransparentFuzzyBlock):
+        for reference_index, target_index in pairs:
+            _copy_transparent_rule_parameters(
+                reference_layer=reference_layer,
+                target_layer=target_layer,
+                reference_index=reference_index,
+                target_index=target_index,
+            )
+        return
+    if isinstance(target_layer, SugenoDecisionLayer) and isinstance(reference_layer, SugenoDecisionLayer):
+        for reference_index, target_index in pairs:
+            _copy_decision_rule_parameters(
+                reference_layer=reference_layer,
+                target_layer=target_layer,
+                reference_index=reference_index,
+                target_index=target_index,
+            )
 
 
 def _validate_reference_model_compatibility(
@@ -630,9 +742,16 @@ def _build_stagewise_from_reference(
         compute_device = current_samples.device
         if reference_model is None:
             reference_inputs = None
+            reference_blocks_by_stage: list[dict[str, TransparentFuzzyBlock] | None] = [None] * len(config.stages)
+            reference_decision_layer = None
         else:
             reference_for_reestimation = copy.deepcopy(reference_model).to(device=compute_device).eval()
             reference_inputs = _compute_stage_reference_inputs(reference_for_reestimation, current_samples)
+            reference_blocks_by_stage = []
+            for stage in reference_for_reestimation.stages:
+                stage_blocks = {str(connected_block.name): connected_block.block for connected_block in stage.blocks}
+                reference_blocks_by_stage.append(stage_blocks)
+            reference_decision_layer = reference_for_reestimation.decision_layer
         round_inputs = current_samples
         stages: list[FuzzyStage] = []
 
@@ -649,6 +768,15 @@ def _build_stagewise_from_reference(
                     local_generation_inputs,
                     config=bootstrap,
                 )
+                reference_block = None
+                stage_reference = reference_blocks_by_stage[stage_index]
+                if stage_reference is not None:
+                    reference_block = stage_reference.get(str(connected_block.name))
+                _apply_rule_swap_warmstart(
+                    reference_layer=reference_block,
+                    target_layer=connected_block.block,
+                    config=pretrain,
+                )
             _fit_stage_with_linear_head(stage, round_inputs, training_targets, pretrain)
             stages.append(stage)
             with torch.no_grad():
@@ -664,6 +792,11 @@ def _build_stagewise_from_reference(
             decision_generation_inputs,
             sample_targets=target_matrix,
             config=bootstrap,
+        )
+        _apply_rule_swap_warmstart(
+            reference_layer=reference_decision_layer,
+            target_layer=decision_layer,
+            config=pretrain,
         )
         _fit_decision_layer_on_features(decision_layer, round_inputs, training_targets, pretrain)
         candidate_model = DeepFuzzyFeatureModel(stages=stages, decision_layer=decision_layer, input_dim=config.input_dim)
