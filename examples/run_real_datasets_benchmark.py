@@ -330,13 +330,15 @@ def _load_california_housing() -> tuple[np.ndarray, np.ndarray]:
     return data.data.astype(np.float32), data.target.astype(np.float32)
 
 
-def _load_covtype_binary_20000() -> tuple[np.ndarray, np.ndarray]:
+def _load_covtype_binary_subset(train_size: int | None) -> tuple[np.ndarray, np.ndarray]:
     features, target = fetch_covtype(return_X_y=True)
     target_binary = (target == 2).astype(np.float32)
+    if train_size is None or int(train_size) >= int(features.shape[0]):
+        return features.astype(np.float32), target_binary.astype(np.float32)
     features_subset, _, target_subset, _ = train_test_split(
         features,
         target_binary,
-        train_size=20_000,
+        train_size=int(train_size),
         random_state=42,
         stratify=target_binary,
     )
@@ -344,16 +346,27 @@ def _load_covtype_binary_20000() -> tuple[np.ndarray, np.ndarray]:
 
 
 def _load_covtype_binary_8000() -> tuple[np.ndarray, np.ndarray]:
-    features, target = fetch_covtype(return_X_y=True)
-    target_binary = (target == 2).astype(np.float32)
-    features_subset, _, target_subset, _ = train_test_split(
-        features,
-        target_binary,
-        train_size=8_000,
-        random_state=42,
-        stratify=target_binary,
-    )
-    return features_subset.astype(np.float32), target_subset.astype(np.float32)
+    return _load_covtype_binary_subset(8_000)
+
+
+def _load_covtype_binary_20000() -> tuple[np.ndarray, np.ndarray]:
+    return _load_covtype_binary_subset(20_000)
+
+
+def _load_covtype_binary_50000() -> tuple[np.ndarray, np.ndarray]:
+    return _load_covtype_binary_subset(50_000)
+
+
+def _load_covtype_binary_100000() -> tuple[np.ndarray, np.ndarray]:
+    return _load_covtype_binary_subset(100_000)
+
+
+def _load_covtype_binary_200000() -> tuple[np.ndarray, np.ndarray]:
+    return _load_covtype_binary_subset(200_000)
+
+
+def _load_covtype_binary_full() -> tuple[np.ndarray, np.ndarray]:
+    return _load_covtype_binary_subset(None)
 
 
 DATASETS: dict[str, DatasetSpec] = {
@@ -375,6 +388,26 @@ DATASETS: dict[str, DatasetSpec] = {
         name="covtype_binary_20000",
         task_type="binary_classification",
         loader=_load_covtype_binary_20000,
+    ),
+    "covtype_binary_50000": DatasetSpec(
+        name="covtype_binary_50000",
+        task_type="binary_classification",
+        loader=_load_covtype_binary_50000,
+    ),
+    "covtype_binary_100000": DatasetSpec(
+        name="covtype_binary_100000",
+        task_type="binary_classification",
+        loader=_load_covtype_binary_100000,
+    ),
+    "covtype_binary_200000": DatasetSpec(
+        name="covtype_binary_200000",
+        task_type="binary_classification",
+        loader=_load_covtype_binary_200000,
+    ),
+    "covtype_binary_full": DatasetSpec(
+        name="covtype_binary_full",
+        task_type="binary_classification",
+        loader=_load_covtype_binary_full,
     ),
     "covtype_binary_8000": DatasetSpec(
         name="covtype_binary_8000",
@@ -789,6 +822,68 @@ def apply_dffl_profile_overrides(
     if not updates:
         return profile
     return replace(profile, **updates)
+
+
+def _cap_optional_int(value: int | None, cap: int) -> int:
+    if value is None:
+        return int(cap)
+    return int(min(int(value), int(cap)))
+
+
+def apply_dffl_fast_gpu_profile(
+    profile: DfflProfile,
+    *,
+    task_type: TaskType,
+    input_dim: int,
+    n_samples: int,
+    total_budget_locked: bool,
+) -> tuple[DfflProfile, str]:
+    # Speed-oriented profile for GPU runs: reduce CPU-heavy prototype/rule generation
+    # while preserving core DFFL topology.
+    if input_dim < 30:
+        return profile, "none"
+
+    updates: dict[str, object] = {}
+    if task_type == "binary_classification":
+        updates["local_max_rules"] = min(profile.local_max_rules, 9)
+        updates["aggregate_max_rules"] = min(profile.aggregate_max_rules, 20)
+        updates["decision_max_rules"] = min(profile.decision_max_rules, 12)
+        updates["bridge_top_pairs"] = min(profile.bridge_top_pairs, 8)
+        updates["bridge_max_rules"] = min(profile.bridge_max_rules, 6)
+        updates["aggregate_block_count"] = min(profile.aggregate_block_count, 1)
+        updates["aggregate_overlap"] = 0
+        updates["pretrain_refinement_rounds"] = min(profile.pretrain_refinement_rounds, 1)
+        updates["refinement_cycle_floor"] = min(profile.refinement_cycle_floor, 1)
+        updates["stagewise_rule_swap_ratio"] = min(profile.stagewise_rule_swap_ratio, 0.10)
+        updates["stagewise_rule_swap_min_keep"] = min(profile.stagewise_rule_swap_min_keep, 4)
+        if profile.top_k_rules is not None:
+            updates["top_k_rules"] = min(int(profile.top_k_rules), 16)
+        if not total_budget_locked:
+            target_budget = 120 if n_samples >= 8_000 else 96
+            current_budget = int(profile.total_rule_budget)
+            updates["total_rule_budget"] = target_budget if current_budget <= 0 else min(current_budget, target_budget)
+    else:
+        updates["pretrain_refinement_rounds"] = min(profile.pretrain_refinement_rounds, 1)
+        updates["refinement_cycle_floor"] = min(profile.refinement_cycle_floor, 1)
+        if not total_budget_locked and input_dim >= 40:
+            current_budget = int(profile.total_rule_budget)
+            updates["total_rule_budget"] = 96 if current_budget <= 0 else min(current_budget, 96)
+
+    updates["local_prototype_sample_size"] = _cap_optional_int(profile.local_prototype_sample_size, 256)
+    updates["aggregate_prototype_sample_size"] = _cap_optional_int(profile.aggregate_prototype_sample_size, 256)
+    updates["decision_prototype_sample_size"] = _cap_optional_int(profile.decision_prototype_sample_size, 256)
+    updates["bridge_prototype_sample_size"] = _cap_optional_int(profile.bridge_prototype_sample_size, 256)
+    updates["local_prototype_variable_pool_size"] = _cap_optional_int(profile.local_prototype_variable_pool_size, 3)
+    updates["aggregate_prototype_variable_pool_size"] = _cap_optional_int(
+        profile.aggregate_prototype_variable_pool_size,
+        8,
+    )
+    updates["decision_prototype_variable_pool_size"] = _cap_optional_int(profile.decision_prototype_variable_pool_size, 6)
+
+    fast_profile = replace(profile, **updates)
+    if not str(fast_profile.name).endswith("_fastgpu"):
+        fast_profile = replace(fast_profile, name=f"{fast_profile.name}_fastgpu")
+    return fast_profile, "fast_gpu_mode"
 
 
 def apply_dataset_budget_reallocation(
@@ -1617,7 +1712,9 @@ def _resolve_dffl_effective_rule_budgets(
 
     decision_cap = int(profile.decision_max_rules)
     if n_local_groups >= 12 and input_dim >= 40:
-        decision_cap = min(decision_cap, 12)
+        # Keep decision layer compact on high-dimensional tasks, but avoid
+        # over-tight caps that underfit long-range interactions.
+        decision_cap = min(decision_cap, 14)
 
     aggregate_cap_total = int(profile.aggregate_max_rules)
     if profile.aggregate_global_context_dim > 0:
@@ -1672,9 +1769,11 @@ def _resolve_dffl_effective_rule_budgets(
     if budget_total < min_total:
         budget_total = min(cap_total, min_total)
         allocation_policy = f"{allocation_policy}_raised_to_min"
-    if high_dim_compact and budget_total > 133:
-        budget_total = 133
-        allocation_policy = f"{allocation_policy}+highdim_cap133"
+    if high_dim_compact:
+        high_dim_soft_cap = min(cap_total, max(152, min(196, 10 * n_local_groups + 20)))
+        if budget_total > high_dim_soft_cap:
+            budget_total = high_dim_soft_cap
+            allocation_policy = f"{allocation_policy}+highdim_cap{int(high_dim_soft_cap)}"
 
     share = float(np.clip(intergroup_interaction_share, 0.0, 1.0))
     utilities = {
@@ -1984,6 +2083,10 @@ def make_dffl_bridge_pairs(
     # avoid overusing the same features and the same group-pair corridor.
     max_pairs_per_feature = max(1, int(profile.bridge_max_pairs_per_feature))
     max_pairs_per_group_pair = max(1, int(profile.bridge_max_pairs_per_group_pair))
+    if input_dim >= 40 and interaction_share >= 0.55:
+        max_pairs_per_group_pair = max(max_pairs_per_group_pair, 2)
+    if input_dim >= 80 and interaction_share >= 0.65:
+        max_pairs_per_group_pair = max(max_pairs_per_group_pair, 3)
     feature_pair_count: dict[int, int] = {}
     group_pair_count: dict[tuple[int, int], int] = {}
     selected: list[tuple[float, int, int]] = []
@@ -2330,8 +2433,10 @@ def build_dffl_config(
             if block_index in high_arity_group_set:
                 local_rule_arity = min(max(profile.local_max_rule_arity, 3), len(indices))
             elif input_dim >= 40 and profile.local_max_rule_arity >= 3:
-                # Keep most high-dimensional local blocks compact and open extra arity only where justified.
-                local_rule_arity = min(2, len(indices))
+                # Keep high-dimensional blocks mostly compact but allow a wider
+                # subset to preserve useful cross-feature interactions.
+                relaxed_high_arity = block_index < max(1, len(groups) // 3)
+                local_rule_arity = min(3 if relaxed_high_arity else 2, len(indices))
         stage_1_blocks.append(
             TransparentBlockConfig(
                 name=f"dffl_local_{block_index}",
@@ -2437,6 +2542,9 @@ def build_dffl_config(
         )
         global_max_rules_effective = min(global_cap, max(2, aggregate_rule_budget_total // 3))
         aggregate_rule_budget_total = max(1, aggregate_rule_budget_total - global_max_rules_effective)
+    # Guard against zero-rule aggregate blocks when the effective budget is tight.
+    # This can happen under high-dimensional budget caps with many aggregate blocks.
+    aggregate_blocks = max(1, min(aggregate_blocks, aggregate_rule_budget_total))
     aggregate_rule_budget = _split_even(aggregate_rule_budget_total, aggregate_blocks)
     aggregate_output_dims = _split_even(stage_2_width, aggregate_blocks)
     aggregate_input_windows = _build_overlapping_windows(
@@ -3033,6 +3141,7 @@ def run_single_seed_dataset_benchmark(
     dffl_bridge_score_stability_weight: float | None,
     dffl_adaptive_budget: bool,
     dffl_adaptive_local_arity: bool,
+    dffl_fast_gpu: bool,
     dffl_tiny_restarts: int,
     stacked_width_scale: float,
     stacked_rule_scale: float,
@@ -3179,7 +3288,20 @@ def run_single_seed_dataset_benchmark(
         dataset_overrides=dffl_dataset_overrides,
         total_budget_locked=(dffl_total_rule_budget is not None),
     )
-    policy_parts = [part for part in (dffl_dataset_budget_policy, dataset_profile_policy, dataset_field_policy) if part != "none"]
+    dffl_fast_gpu_policy = "none"
+    if dffl_fast_gpu:
+        dffl_profile, dffl_fast_gpu_policy = apply_dffl_fast_gpu_profile(
+            dffl_profile,
+            task_type=spec.task_type,
+            input_dim=split.input_dim,
+            n_samples=split.n_samples,
+            total_budget_locked=(dffl_total_rule_budget is not None),
+        )
+    policy_parts = [
+        part
+        for part in (dffl_dataset_budget_policy, dataset_profile_policy, dataset_field_policy, dffl_fast_gpu_policy)
+        if part != "none"
+    ]
     dffl_dataset_budget_policy = "+".join(policy_parts) if policy_parts else "none"
     feature_geometry_effective, feature_geometry_policy = _resolve_effective_feature_geometry(
         requested_geometry=feature_geometry_requested,
@@ -4353,6 +4475,7 @@ def build_reproducibility_manifest_payload(
                 ),
                 "dffl_adaptive_rule_swap": bool(not args.disable_dffl_adaptive_rule_swap),
                 "dffl_adaptive_budget": bool(not args.disable_dffl_adaptive_budget),
+                "dffl_fast_gpu": bool(args.dffl_fast_gpu),
                 "dffl_rule_swap_ratio_override": (
                     float(args.dffl_rule_swap_ratio) if args.dffl_rule_swap_ratio is not None else None
                 ),
@@ -4433,6 +4556,7 @@ def build_reproducibility_manifest_payload(
             "ruanfis_refined_deep": {
                 "dffl_profile_requested": str(args.dffl_profile),
                 "dffl_one_phase": bool(args.dffl_one_phase),
+                "dffl_fast_gpu": bool(args.dffl_fast_gpu),
                 "dffl_adaptive_rule_swap": bool(not args.disable_dffl_adaptive_rule_swap),
                 "dffl_adaptive_budget": bool(not args.disable_dffl_adaptive_budget),
                 "dffl_rule_swap_ratio_override": (
@@ -4742,6 +4866,11 @@ def main() -> None:
         help="Train DFFL in one-phase mode (bootstrap + single joint fit) without stage-wise refinement.",
     )
     parser.add_argument(
+        "--dffl-fast-gpu",
+        action="store_true",
+        help="Apply speed-oriented DFFL caps to reduce CPU-heavy rule/prototype generation in GPU runs.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -4834,8 +4963,24 @@ def main() -> None:
             dataset_overrides=dffl_dataset_overrides,
             total_budget_locked=(args.dffl_total_rule_budget is not None),
         )
+        resolved_fast_gpu_policy = "none"
+        if args.dffl_fast_gpu:
+            resolved_profile, resolved_fast_gpu_policy = apply_dffl_fast_gpu_profile(
+                resolved_profile,
+                task_type=spec.task_type,
+                input_dim=int(dataset_features.shape[1]),
+                n_samples=int(dataset_features.shape[0]),
+                total_budget_locked=(args.dffl_total_rule_budget is not None),
+            )
         resolved_policy_parts = [
-            part for part in (resolved_dataset_budget_policy, resolved_profile_policy, resolved_field_policy) if part != "none"
+            part
+            for part in (
+                resolved_dataset_budget_policy,
+                resolved_profile_policy,
+                resolved_field_policy,
+                resolved_fast_gpu_policy,
+            )
+            if part != "none"
         ]
         resolved_dataset_budget_policy = "+".join(resolved_policy_parts) if resolved_policy_parts else "none"
         per_seed_results = []
@@ -4869,6 +5014,7 @@ def main() -> None:
                 dffl_bridge_score_stability_weight=args.dffl_bridge_score_stability_weight,
                 dffl_adaptive_budget=not args.disable_dffl_adaptive_budget,
                 dffl_adaptive_local_arity=not args.disable_dffl_adaptive_local_arity,
+                dffl_fast_gpu=bool(args.dffl_fast_gpu),
                 dffl_tiny_restarts=max(1, int(args.dffl_tiny_restarts)),
                 stacked_width_scale=args.stacked_width_scale,
                 stacked_rule_scale=args.stacked_rule_scale,
@@ -5036,6 +5182,7 @@ def main() -> None:
         f"dffl_bridge_score_stability_weight_override: {args.dffl_bridge_score_stability_weight}",
         f"dffl_dataset_overrides: {json.dumps(dffl_dataset_overrides, ensure_ascii=False)}",
         f"dffl_one_phase: {args.dffl_one_phase}",
+        f"dffl_fast_gpu: {args.dffl_fast_gpu}",
         f"gpu_only: {args.gpu_only}",
         f"fuzzy_models: {', '.join(fuzzy_models)}",
         f"fuzzy_distill_weight: {args.fuzzy_distill_weight}",
@@ -5095,6 +5242,7 @@ def main() -> None:
             "dffl_bridge_score_stability_weight_override": args.dffl_bridge_score_stability_weight,
             "dffl_dataset_overrides": {key: dict(value) for key, value in dffl_dataset_overrides.items()},
             "dffl_one_phase": bool(args.dffl_one_phase),
+            "dffl_fast_gpu": bool(args.dffl_fast_gpu),
             "gpu_only": bool(args.gpu_only),
             "fuzzy_models": list(fuzzy_models),
             "fuzzy_distill_weight": float(args.fuzzy_distill_weight),
