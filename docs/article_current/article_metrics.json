@@ -1,0 +1,52 @@
+{
+  "source": "main(2).tex tables: main comparison block",
+  "updated_at": "2026-04-26",
+  "main_block_quality": {
+    "ruanfis_shallow": {
+      "diabetes": 0.1852,
+      "linnerud_weight": 0.3519,
+      "breast_cancer": 0.9750,
+      "wine_binary": 0.9577,
+      "digits_binary": 0.9367
+    },
+    "ruanfis_stacked_anfis": {
+      "diabetes": 0.1857,
+      "linnerud_weight": 0.2887,
+      "breast_cancer": 0.9841,
+      "wine_binary": 0.9855,
+      "digits_binary": 0.9953
+    },
+    "ruanfis_hierarchical_anfis": {
+      "diabetes": 0.1937,
+      "linnerud_weight": 0.2430,
+      "breast_cancer": 0.9722,
+      "wine_binary": 0.9189,
+      "digits_binary": 0.9953
+    },
+    "ruanfis_refined_deep": {
+      "diabetes": 0.1796,
+      "linnerud_weight": 0.2874,
+      "breast_cancer": 0.9652,
+      "wine_binary": 0.9564,
+      "digits_binary": 1.0000
+    }
+  },
+  "main_block_complexity_stability": {
+    "ruanfis_shallow": {
+      "avg_rules": 36.00,
+      "active_rule_jaccard": 0.2352
+    },
+    "ruanfis_stacked_anfis": {
+      "avg_rules": 50.00,
+      "active_rule_jaccard": 0.1268
+    },
+    "ruanfis_hierarchical_anfis": {
+      "avg_rules": 75.00,
+      "active_rule_jaccard": 0.1766
+    },
+    "ruanfis_refined_deep": {
+      "avg_rules": 75.47,
+      "active_rule_jaccard": 0.0888
+    }
+  }
+}
