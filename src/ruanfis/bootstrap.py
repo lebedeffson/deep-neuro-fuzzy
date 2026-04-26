@@ -273,6 +273,17 @@ def _compute_stage_reference_inputs(
     return tuple(reference_inputs)
 
 
+def _append_config_final_skip_inputs(
+    config: HierarchicalModelConfig,
+    raw_inputs: Tensor,
+    features: Tensor,
+) -> Tensor:
+    if not config.final_skip_input_indices:
+        return features
+    skip_indices = torch.tensor(config.final_skip_input_indices, dtype=torch.long, device=raw_inputs.device)
+    return torch.cat((features, raw_inputs.index_select(1, skip_indices)), dim=1)
+
+
 def _rule_signature_from_layer_rule(rule_spec) -> tuple[tuple[int, int], ...]:
     return tuple((int(ant.variable_index), int(ant.term_index)) for ant in rule_spec.antecedents)
 
@@ -611,6 +622,7 @@ def build_bootstrapped_hierarchical_model(
         name="sample_inputs",
         device=device,
     )
+    raw_samples = current_samples
     target_matrix = None
     if sample_targets is not None:
         target_matrix = _to_target_matrix(
@@ -633,14 +645,22 @@ def build_bootstrapped_hierarchical_model(
         with torch.no_grad():
             current_samples = stage(current_samples)
 
-    decision_layer = build_decision_layer(config.decision_layer, sample_inputs=current_samples).to(device=compute_device)
+    decision_inputs = _append_config_final_skip_inputs(config, raw_samples, current_samples)
+    decision_layer = build_decision_layer(config.decision_layer, sample_inputs=decision_inputs).to(device=compute_device)
     initialize_decision_layer_from_samples(
         decision_layer,
-        current_samples,
+        decision_inputs,
         sample_targets=target_matrix,
         config=bootstrap,
     )
-    return DeepFuzzyFeatureModel(stages=stages, decision_layer=decision_layer, input_dim=config.input_dim)
+    return DeepFuzzyFeatureModel(
+        stages=stages,
+        decision_layer=decision_layer,
+        input_dim=config.input_dim,
+        final_skip_input_indices=config.final_skip_input_indices,
+        final_skip_gates_enabled=config.final_skip_gates_enabled,
+        final_skip_gate_init_logit=config.final_skip_gate_init_logit,
+    )
 
 
 def build_stagewise_pretrained_hierarchical_model(
@@ -782,7 +802,12 @@ def _build_stagewise_from_reference(
             with torch.no_grad():
                 round_inputs = stage(round_inputs)
 
-        decision_generation_inputs = round_inputs if reference_inputs is None else reference_inputs[-1]
+        decision_generation_stage_inputs = round_inputs if reference_inputs is None else reference_inputs[-1]
+        decision_generation_inputs = _append_config_final_skip_inputs(
+            config,
+            current_samples,
+            decision_generation_stage_inputs,
+        )
         decision_layer = build_decision_layer(
             config.decision_layer,
             sample_inputs=decision_generation_inputs,
@@ -798,8 +823,16 @@ def _build_stagewise_from_reference(
             target_layer=decision_layer,
             config=pretrain,
         )
-        _fit_decision_layer_on_features(decision_layer, round_inputs, training_targets, pretrain)
-        candidate_model = DeepFuzzyFeatureModel(stages=stages, decision_layer=decision_layer, input_dim=config.input_dim)
+        round_decision_inputs = _append_config_final_skip_inputs(config, current_samples, round_inputs)
+        _fit_decision_layer_on_features(decision_layer, round_decision_inputs, training_targets, pretrain)
+        candidate_model = DeepFuzzyFeatureModel(
+            stages=stages,
+            decision_layer=decision_layer,
+            input_dim=config.input_dim,
+            final_skip_input_indices=config.final_skip_input_indices,
+            final_skip_gates_enabled=config.final_skip_gates_enabled,
+            final_skip_gate_init_logit=config.final_skip_gate_init_logit,
+        )
 
         with torch.no_grad():
             if validation_samples is not None and validation_training_targets is not None:

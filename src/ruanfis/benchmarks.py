@@ -226,9 +226,12 @@ def _summarize_fuzzy_model_explainability(
     inputs: Tensor,
     *,
     top_k_rules: int | None = None,
+    max_samples: int = 8192,
 ) -> dict[str, float]:
     if inputs.numel() == 0:
         return {}
+    if int(inputs.size(0)) > max_samples:
+        inputs = inputs[:max_samples]
 
     device = next(model.parameters(), torch.empty(0)).device
     if isinstance(model, DeepFuzzyFeatureModel):
@@ -347,21 +350,25 @@ def evaluate_trained_model(
 
     device = next(model.parameters(), torch.empty(0)).device
 
+    def _predict_batched(features: Tensor, *, batch_size: int = 8192) -> Tensor:
+        batches: list[Tensor] = []
+        with torch.no_grad():
+            for start in range(0, features.size(0), batch_size):
+                batch_features = features[start : start + batch_size].to(device=device, dtype=torch.float32)
+                batch_predictions = predict_with_optional_residual_head(
+                    model,
+                    batch_features,
+                    top_k_rules=top_k_rules,
+                )
+                batches.append(batch_predictions.detach().cpu())
+        return torch.cat(batches, dim=0)
+
     model.eval()
-    with torch.no_grad():
-        train_predictions = predict_with_optional_residual_head(
-            model,
-            train_features.to(device=device, dtype=torch.float32),
-            top_k_rules=top_k_rules,
-        ).detach().cpu()
-        test_predictions = predict_with_optional_residual_head(
-            model,
-            test_features.to(device=device, dtype=torch.float32),
-            top_k_rules=top_k_rules,
-        ).detach().cpu()
-        if prediction_postprocessor is not None:
-            train_predictions = prediction_postprocessor(train_predictions)
-            test_predictions = prediction_postprocessor(test_predictions)
+    train_predictions = _predict_batched(train_features)
+    test_predictions = _predict_batched(test_features)
+    if prediction_postprocessor is not None:
+        train_predictions = prediction_postprocessor(train_predictions)
+        test_predictions = prediction_postprocessor(test_predictions)
 
     structural_metrics: dict[str, float] = {}
     explainability_metrics: dict[str, float] = {}

@@ -86,6 +86,9 @@ class HierarchicalModelConfig:
     input_dim: int
     stages: tuple[StageConfig, ...]
     decision_layer: DecisionLayerConfig
+    final_skip_input_indices: tuple[int, ...] = ()
+    final_skip_gates_enabled: bool = False
+    final_skip_gate_init_logit: float = 2.0
 
     def generated_rule_count(self) -> int:
         return sum(stage.generated_rule_count() for stage in self.stages) + self.decision_layer.generated_rule_count()
@@ -108,6 +111,9 @@ class ShallowFuzzyModelConfig:
                 ),
             ),
             decision_layer=self.decision_layer,
+            final_skip_input_indices=(),
+            final_skip_gates_enabled=False,
+            final_skip_gate_init_logit=2.0,
         )
 
     def generated_rule_count(self) -> int:
@@ -310,6 +316,7 @@ def build_hierarchical_model(
 
     stages: list[FuzzyStage] = []
     current_samples = sample_inputs
+    original_samples = sample_inputs
     for stage_config in config.stages:
         stage = build_stage(stage_config, sample_inputs=current_samples)
         stages.append(stage)
@@ -317,8 +324,20 @@ def build_hierarchical_model(
             with torch.no_grad():
                 current_samples = stage(current_samples)
 
-    decision_layer = build_decision_layer(config.decision_layer, sample_inputs=current_samples)
-    return DeepFuzzyFeatureModel(stages=stages, decision_layer=decision_layer, input_dim=config.input_dim)
+    decision_samples = current_samples
+    if decision_samples is not None and original_samples is not None and config.final_skip_input_indices:
+        skip_indices = torch.tensor(config.final_skip_input_indices, dtype=torch.long, device=original_samples.device)
+        decision_samples = torch.cat((decision_samples, original_samples.index_select(1, skip_indices)), dim=1)
+
+    decision_layer = build_decision_layer(config.decision_layer, sample_inputs=decision_samples)
+    return DeepFuzzyFeatureModel(
+        stages=stages,
+        decision_layer=decision_layer,
+        input_dim=config.input_dim,
+        final_skip_input_indices=config.final_skip_input_indices,
+        final_skip_gates_enabled=config.final_skip_gates_enabled,
+        final_skip_gate_init_logit=config.final_skip_gate_init_logit,
+    )
 
 
 def build_shallow_fuzzy_model(

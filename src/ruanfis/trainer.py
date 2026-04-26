@@ -381,25 +381,40 @@ class FuzzyTrainer:
         top_k_rules_override: int | None = None,
     ) -> EvaluationResult:
         device = self._resolve_device()
-        inputs = inputs.to(device=device, dtype=torch.float32)
-        targets = targets.to(device=device, dtype=torch.float32)
         self.model.eval()
         top_k_rules = self.config.top_k_rules if top_k_rules_override is None else top_k_rules_override
+        batch_size = self.config.batch_size or inputs.size(0)
+        if batch_size <= 0:
+            raise ValueError("The batch size must be positive.")
+        total_loss = 0.0
+        total_items = 0
+        prediction_batches: list[Tensor] = []
+        target_batches: list[Tensor] = []
         with torch.no_grad():
-            predictions = predict_with_optional_residual_head(
-                self.model,
-                inputs,
-                top_k_rules=top_k_rules,
-            )
-            aligned_targets = self._align_targets(predictions, targets)
-            loss = self.loss_fn(predictions, aligned_targets).item()
-            metrics = compute_metrics(
-                self.config.task_type,
-                predictions,
-                aligned_targets,
-                classification_threshold=self.config.classification_threshold,
-            )
-        return EvaluationResult(loss=float(loss), metrics=metrics)
+            for start in range(0, inputs.size(0), batch_size):
+                batch_inputs = inputs[start : start + batch_size].to(device=device, dtype=torch.float32)
+                batch_targets = targets[start : start + batch_size].to(device=device, dtype=torch.float32)
+                predictions = predict_with_optional_residual_head(
+                    self.model,
+                    batch_inputs,
+                    top_k_rules=top_k_rules,
+                )
+                aligned_targets = self._align_targets(predictions, batch_targets)
+                loss = self.loss_fn(predictions, aligned_targets)
+                current_batch_size = int(batch_inputs.size(0))
+                total_loss += float(loss.item()) * current_batch_size
+                total_items += current_batch_size
+                prediction_batches.append(predictions.detach().cpu())
+                target_batches.append(aligned_targets.detach().cpu())
+            stacked_predictions = torch.cat(prediction_batches, dim=0)
+            stacked_targets = torch.cat(target_batches, dim=0)
+        metrics = compute_metrics(
+            self.config.task_type,
+            stacked_predictions,
+            stacked_targets,
+            classification_threshold=self.config.classification_threshold,
+        )
+        return EvaluationResult(loss=float(total_loss / max(total_items, 1)), metrics=metrics)
 
     def _resolve_device(self) -> torch.device:
         if self.config.device is not None:

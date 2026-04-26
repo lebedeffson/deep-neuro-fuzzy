@@ -5,6 +5,8 @@ import datetime as dt
 import json
 import sys
 import time
+import urllib.request
+import zipfile
 from collections import Counter
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
@@ -13,13 +15,13 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import torch
 from torch.nn import functional as F
-from sklearn.datasets import load_breast_cancer, load_diabetes, load_digits, load_linnerud, load_wine
+from sklearn.datasets import fetch_kddcup99, load_breast_cancer, load_diabetes, load_digits, load_linnerud, load_wine
 from sklearn.datasets import fetch_california_housing, fetch_covtype
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -172,6 +174,11 @@ class DfflProfile:
     block_agreement_weight: float = 0.0
     block_agreement_target_corr: float = 0.2
     block_agreement_stage_limit: int = 1
+    final_skip_input_count: int = 0
+    final_skip_input_indices: tuple[int, ...] = ()
+    final_skip_mode: str = "target_corr_diverse"
+    final_skip_gates_enabled: bool = False
+    final_skip_gate_init_logit: float = 2.0
 
 
 def set_seed(seed: int) -> None:
@@ -373,6 +380,74 @@ def _load_covtype_binary_full() -> tuple[np.ndarray, np.ndarray]:
     return _load_covtype_binary_subset(None)
 
 
+def _ensure_susy_csv_gz() -> Path:
+    cache_dir = PROJECT_ROOT / "data" / "external" / "susy"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    csv_gz_path = cache_dir / "SUSY.csv.gz"
+    if csv_gz_path.exists():
+        return csv_gz_path
+
+    zip_path = cache_dir / "susy.zip"
+    if zip_path.exists() and not zipfile.is_zipfile(zip_path):
+        progress_log(f"removing incomplete SUSY archive: {zip_path}")
+        zip_path.unlink()
+    if not zip_path.exists():
+        url = "https://archive.ics.uci.edu/static/public/279/susy.zip"
+        progress_log(f"downloading SUSY dataset from {url}")
+        urllib.request.urlretrieve(url, zip_path)
+
+    with zipfile.ZipFile(zip_path) as archive:
+        member_names = archive.namelist()
+        csv_members = [name for name in member_names if name.endswith("SUSY.csv.gz")]
+        if not csv_members:
+            raise RuntimeError(f"SUSY.csv.gz not found in {zip_path}; members={member_names[:10]}")
+        archive.extract(csv_members[0], cache_dir)
+        extracted_path = cache_dir / csv_members[0]
+        if extracted_path != csv_gz_path:
+            extracted_path.replace(csv_gz_path)
+    return csv_gz_path
+
+
+def _load_susy_binary_subset(sample_size: int | None) -> tuple[np.ndarray, np.ndarray]:
+    csv_gz_path = _ensure_susy_csv_gz()
+    max_rows = None if sample_size is None else int(sample_size)
+    data = np.loadtxt(csv_gz_path, delimiter=",", dtype=np.float32, max_rows=max_rows)
+    target = data[:, 0].astype(np.float32)
+    features = data[:, 1:].astype(np.float32)
+    return features, target
+
+
+def _load_susy_binary_200000() -> tuple[np.ndarray, np.ndarray]:
+    return _load_susy_binary_subset(200_000)
+
+
+def _load_susy_binary_1000000() -> tuple[np.ndarray, np.ndarray]:
+    return _load_susy_binary_subset(1_000_000)
+
+
+def _load_susy_binary_full() -> tuple[np.ndarray, np.ndarray]:
+    return _load_susy_binary_subset(None)
+
+
+def _load_kddcup99_binary(percent10: bool) -> tuple[np.ndarray, np.ndarray]:
+    features_raw, target_raw = fetch_kddcup99(percent10=percent10, return_X_y=True, as_frame=False)
+    categorical = features_raw[:, [1, 2, 3]]
+    numeric = np.delete(features_raw, [1, 2, 3], axis=1).astype(np.float32)
+    encoder = OneHotEncoder(sparse_output=False, dtype=np.float32, handle_unknown="ignore")
+    categorical_encoded = encoder.fit_transform(categorical)
+    features = np.concatenate([numeric, categorical_encoded], axis=1).astype(np.float32)
+    target = (target_raw != b"normal.").astype(np.float32)
+    return features, target
+
+
+def _load_kddcup99_binary_10percent() -> tuple[np.ndarray, np.ndarray]:
+    return _load_kddcup99_binary(percent10=True)
+
+
+def _load_kddcup99_binary_full() -> tuple[np.ndarray, np.ndarray]:
+    return _load_kddcup99_binary(percent10=False)
+
+
 DATASETS: dict[str, DatasetSpec] = {
     "diabetes": DatasetSpec(name="diabetes", task_type="regression", loader=_load_diabetes),
     "linnerud_weight": DatasetSpec(name="linnerud_weight", task_type="regression", loader=_load_linnerud_weight),
@@ -417,6 +492,31 @@ DATASETS: dict[str, DatasetSpec] = {
         name="covtype_binary_8000",
         task_type="binary_classification",
         loader=_load_covtype_binary_8000,
+    ),
+    "susy_binary_200000": DatasetSpec(
+        name="susy_binary_200000",
+        task_type="binary_classification",
+        loader=_load_susy_binary_200000,
+    ),
+    "susy_binary_1000000": DatasetSpec(
+        name="susy_binary_1000000",
+        task_type="binary_classification",
+        loader=_load_susy_binary_1000000,
+    ),
+    "susy_binary_full": DatasetSpec(
+        name="susy_binary_full",
+        task_type="binary_classification",
+        loader=_load_susy_binary_full,
+    ),
+    "kddcup99_binary_10percent": DatasetSpec(
+        name="kddcup99_binary_10percent",
+        task_type="binary_classification",
+        loader=_load_kddcup99_binary_10percent,
+    ),
+    "kddcup99_binary_full": DatasetSpec(
+        name="kddcup99_binary_full",
+        task_type="binary_classification",
+        loader=_load_kddcup99_binary_full,
     ),
 }
 
@@ -2532,6 +2632,7 @@ def build_dffl_config(
     adaptive_budget_enabled: bool = True,
     adaptive_local_arity_enabled: bool = True,
     component_marginal_gains: dict[str, float] | None = None,
+    final_skip_input_indices: tuple[int, ...] | None = None,
 ) -> HierarchicalModelConfig:
     groups = input_groups or _make_groups(input_dim, group_size=profile.input_group_size)
     binary_feature_set = set(binary_feature_indices or ())
@@ -2542,6 +2643,8 @@ def build_dffl_config(
         residual_features = ()
     if not profile.bridge_enabled:
         bridge_pairs = ()
+    skip_indices = tuple(int(index) for index in (final_skip_input_indices or profile.final_skip_input_indices))
+    skip_indices = tuple(index for index in skip_indices if 0 <= index < input_dim)
     n_local_groups = len(groups)
     share = (
         float(np.clip(intergroup_interaction_share, 0.0, 1.0))
@@ -2769,6 +2872,14 @@ def build_dffl_config(
         )
         stage_2_width += global_dim
 
+    decision_variables = tuple(
+        (var3(f"s2_{i}") if profile.decision_three_terms else var2(f"s2_{i}"))
+        for i in range(stage_2_width)
+    ) + tuple(
+        (var_binary(f"x{idx}") if idx in binary_feature_set else var3(f"x{idx}"))
+        for idx in skip_indices
+    )
+
     return HierarchicalModelConfig(
         input_dim=input_dim,
         stages=(
@@ -2787,10 +2898,7 @@ def build_dffl_config(
         ),
         decision_layer=DecisionLayerConfig(
             name="decision",
-            variables=tuple(
-                (var3(f"s2_{i}") if profile.decision_three_terms else var2(f"s2_{i}"))
-                for i in range(stage_2_width)
-            ),
+            variables=decision_variables,
             output_dim=1,
             output_names=("target",),
             max_rule_arity=profile.decision_max_rule_arity,
@@ -2801,6 +2909,9 @@ def build_dffl_config(
             prototype_variable_pool_size=profile.decision_prototype_variable_pool_size,
             prototype_sample_size=profile.decision_prototype_sample_size,
         ),
+        final_skip_input_indices=skip_indices,
+        final_skip_gates_enabled=profile.final_skip_gates_enabled,
+        final_skip_gate_init_logit=profile.final_skip_gate_init_logit,
     )
 
 
@@ -2814,6 +2925,31 @@ def _scale_regression_targets(
     validation_scaled = scaler.transform(validation_targets.reshape(-1, 1)).astype(np.float32)
     test_scaled = scaler.transform(test_targets.reshape(-1, 1)).astype(np.float32)
     return train_scaled, validation_scaled, test_scaled
+
+
+def _predict_logits_batched(
+    model: torch.nn.Module,
+    inputs: torch.Tensor,
+    *,
+    top_k_rules: int | None = None,
+    batch_size: int = 8192,
+) -> torch.Tensor:
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
+    model.eval()
+    predictions: list[torch.Tensor] = []
+    with torch.no_grad():
+        for start in range(0, inputs.size(0), batch_size):
+            batch_inputs = inputs[start : start + batch_size].to(device=device, dtype=torch.float32)
+            batch_predictions = predict_with_optional_residual_head(
+                model,
+                batch_inputs,
+                top_k_rules=top_k_rules,
+            )
+            predictions.append(batch_predictions.detach().cpu())
+    return torch.cat(predictions, dim=0)
 
 
 def _choose_best_classification_threshold(
@@ -2831,20 +2967,13 @@ def _choose_best_classification_threshold(
     if strategy not in {"f1", "calibration"}:
         raise ValueError("threshold strategy must be 'f1' or 'calibration'.")
 
-    try:
-        device = next(model.parameters()).device
-    except StopIteration:
-        device = torch.device("cpu")
-
-    model.eval()
-    with torch.no_grad():
-        validation_logits = predict_with_optional_residual_head(
-            model,
-            validation_inputs.to(device=device, dtype=torch.float32),
-            top_k_rules=top_k_rules,
-        ).detach().cpu()
-        if prediction_postprocessor is not None:
-            validation_logits = prediction_postprocessor(validation_logits)
+    validation_logits = _predict_logits_batched(
+        model,
+        validation_inputs,
+        top_k_rules=top_k_rules,
+    )
+    if prediction_postprocessor is not None:
+        validation_logits = prediction_postprocessor(validation_logits)
 
     best_threshold = float(default_threshold)
     best_primary = float("-inf")
@@ -3445,6 +3574,23 @@ def _maybe_run_hard_sample_finetune(
     trainer.fit(augmented_inputs, augmented_targets, validation_inputs, validation_targets)
 
 
+def _select_bootstrap_subset(
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    max_samples: int = 100_000,
+    seed: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    n_samples = int(inputs.size(0))
+    if n_samples <= max_samples:
+        return inputs, targets
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(seed) + 7919)
+    indices = torch.randperm(n_samples, generator=generator)[:max_samples]
+    indices = indices.to(device=inputs.device)
+    return inputs.index_select(0, indices), targets.index_select(0, indices)
+
+
 def run_single_seed_dataset_benchmark(
     spec: DatasetSpec,
     *,
@@ -3546,6 +3692,20 @@ def run_single_seed_dataset_benchmark(
     if train_noise_sigma > 0.0 and spec.task_type == "regression":
         train_targets = train_targets + train_noise_sigma * torch.randn_like(train_targets)
 
+    bootstrap_inputs, bootstrap_targets = _select_bootstrap_subset(
+        train_inputs,
+        train_targets,
+        seed=seed,
+    )
+    if int(bootstrap_inputs.size(0)) < int(train_inputs.size(0)):
+        progress_log(
+            "seed={seed} bootstrap_subset: {used}/{total} samples for prototype initialization".format(
+                seed=seed,
+                used=int(bootstrap_inputs.size(0)),
+                total=int(train_inputs.size(0)),
+            )
+        )
+
     model_train_targets: dict[str, torch.Tensor] = {model_name: train_targets for model_name in FUZZY_MODEL_NAMES}
     distillation_metadata: dict[str, float] = {}
     if (
@@ -3565,8 +3725,6 @@ def run_single_seed_dataset_benchmark(
         distillation_metadata = dict(dist_meta)
         applied_models: list[str] = []
         for model_name in fuzzy_distill_models:
-            if model_name == "ruanfis_refined_deep":
-                continue
             if model_name in model_train_targets:
                 model_train_targets[model_name] = blended_targets
                 applied_models.append(model_name)
@@ -3626,14 +3784,36 @@ def run_single_seed_dataset_benchmark(
     model_prediction_postprocessors: dict[str, Callable[[torch.Tensor], torch.Tensor] | None] = {}
 
     if "ruanfis_refined_deep" in fuzzy_models:
+        analysis_source_inputs, analysis_source_targets = _select_bootstrap_subset(
+            train_inputs,
+            train_targets,
+            max_samples=80_000,
+            seed=seed + 17,
+        )
+        analysis_validation_source_inputs, analysis_validation_source_targets = _select_bootstrap_subset(
+            validation_inputs,
+            validation_targets,
+            max_samples=50_000,
+            seed=seed + 31,
+        )
+        if int(analysis_source_inputs.size(0)) < int(train_inputs.size(0)):
+            progress_log(
+                "seed={seed} dffl_structure_subset: train={train_used}/{train_total}, val={val_used}/{val_total}".format(
+                    seed=seed,
+                    train_used=int(analysis_source_inputs.size(0)),
+                    train_total=int(train_inputs.size(0)),
+                    val_used=int(analysis_validation_source_inputs.size(0)),
+                    val_total=int(validation_inputs.size(0)),
+                )
+            )
         analysis_train_inputs, analysis_train_targets, analysis_device = _prepare_structure_analysis_tensors(
-            inputs=train_inputs,
-            targets=train_targets,
+            inputs=analysis_source_inputs,
+            targets=analysis_source_targets,
             device=device,
         )
         analysis_validation_inputs, analysis_validation_targets, _ = _prepare_structure_analysis_tensors(
-            inputs=validation_inputs,
-            targets=validation_targets,
+            inputs=analysis_validation_source_inputs,
+            targets=analysis_validation_source_targets,
             device=device,
         )
         dffl_profile = resolve_dffl_profile(
@@ -3797,6 +3977,25 @@ def run_single_seed_dataset_benchmark(
             intergroup_interaction_share=dffl_intergroup_share,
         )
         dffl_binary_feature_indices = _detect_binary_feature_indices(analysis_train_inputs)
+        if dffl_profile.final_skip_input_indices:
+            dffl_final_skip_indices = tuple(int(index) for index in dffl_profile.final_skip_input_indices)
+        elif int(dffl_profile.final_skip_input_count) > 0:
+            dffl_final_skip_indices = _resolve_stacked_final_skip_indices(
+                train_inputs=analysis_train_inputs,
+                train_targets=analysis_train_targets,
+                count=int(dffl_profile.final_skip_input_count),
+                mode=str(dffl_profile.final_skip_mode),
+            )
+        else:
+            dffl_final_skip_indices = ()
+        if dffl_final_skip_indices:
+            progress_log(
+                "seed={seed} model=dffl: final_skip mode={mode} indices={indices}".format(
+                    seed=seed,
+                    mode=dffl_profile.final_skip_mode,
+                    indices=",".join(str(index) for index in dffl_final_skip_indices),
+                )
+            )
         progress_log(
             (
                 "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, "
@@ -3854,6 +4053,7 @@ def run_single_seed_dataset_benchmark(
             else dffl_learning_rate * dffl_profile.learning_rate_scale_regression
         )
         dffl_refinement_cycles = max(refinement_cycles, dffl_profile.refinement_cycle_floor)
+        dffl_train_targets = model_train_targets["ruanfis_refined_deep"]
         phase_started_at = time.perf_counter()
         progress_log(f"seed={seed} model=dffl: start")
         hidden_high = 0.75 if spec.task_type == "binary_classification" else 0.8
@@ -3889,6 +4089,7 @@ def run_single_seed_dataset_benchmark(
             adaptive_budget_enabled=dffl_adaptive_budget,
             adaptive_local_arity_enabled=dffl_adaptive_local_arity_effective,
             component_marginal_gains=dffl_component_marginal_gains,
+            final_skip_input_indices=dffl_final_skip_indices,
         )
         dffl_block_agreement_weight, dffl_block_agreement_target_corr = _resolve_dffl_block_agreement_params(
             profile=dffl_profile,
@@ -3994,17 +4195,17 @@ def run_single_seed_dataset_benchmark(
                     candidate_model = build_bootstrapped_hierarchical_model(
                         dffl_config,
                         sample_inputs=train_inputs,
-                        sample_targets=train_targets,
+                        sample_targets=dffl_train_targets,
                         bootstrap_config=dffl_bootstrap_config,
                         device=device,
                     )
                     dffl_trainer = FuzzyTrainer(candidate_model, candidate_training_config)
-                    dffl_trainer.fit(train_inputs, train_targets, validation_inputs, validation_targets)
+                    dffl_trainer.fit(train_inputs, dffl_train_targets, validation_inputs, validation_targets)
                 else:
                     dffl_result = build_refined_hierarchical_model(
                         dffl_config,
                         train_inputs=train_inputs,
-                        train_targets=train_targets,
+                        train_targets=dffl_train_targets,
                         validation_inputs=validation_inputs,
                         validation_targets=validation_targets,
                         bootstrap_config=dffl_bootstrap_config,
@@ -4035,15 +4236,11 @@ def run_single_seed_dataset_benchmark(
                 calibration_method = "none"
                 if spec.task_type == "binary_classification":
                     candidate_model.eval()
-                    with torch.no_grad():
-                        val_logits_raw = predict_with_optional_residual_head(
-                            candidate_model,
-                            validation_inputs.to(
-                                device=next(candidate_model.parameters()).device,
-                                dtype=torch.float32,
-                            ),
-                            top_k_rules=dffl_profile.top_k_rules,
-                        ).detach().cpu()
+                    val_logits_raw = _predict_logits_batched(
+                        candidate_model,
+                        validation_inputs,
+                        top_k_rules=dffl_profile.top_k_rules,
+                    )
 
                     candidate_calibrator = _fit_binary_probability_calibrator(
                         val_logits_raw,
@@ -4153,8 +4350,8 @@ def run_single_seed_dataset_benchmark(
         progress_log(f"seed={seed} model=shallow: bootstrap+train start")
         shallow_model = build_bootstrapped_shallow_model(
             build_shallow_config(split.input_dim),
-            sample_inputs=train_inputs,
-            sample_targets=train_targets,
+            sample_inputs=bootstrap_inputs,
+            sample_targets=bootstrap_targets,
             bootstrap_config=BootstrapConfig(decision_task_type=spec.task_type),
             device=device,
         )
@@ -4240,8 +4437,8 @@ def run_single_seed_dataset_benchmark(
         if stacked_stagewise_init:
             stacked_model = build_stagewise_initialized_stacked_anfis_model(
                 stacked_config,
-                sample_inputs=train_inputs,
-                sample_targets=model_train_targets["ruanfis_stacked_anfis"],
+                sample_inputs=bootstrap_inputs,
+                sample_targets=bootstrap_targets,
                 task_type=spec.task_type,
                 epochs_per_hidden_layer=stacked_stagewise_init_epochs,
                 learning_rate=fuzzy_learning_rate,
@@ -4252,7 +4449,7 @@ def run_single_seed_dataset_benchmark(
         else:
             stacked_model = build_stacked_anfis_model(
                 stacked_config,
-                sample_inputs=train_inputs,
+                sample_inputs=bootstrap_inputs,
             )
         stacked_training_config = TrainingConfig(
             task_type=spec.task_type,
@@ -4318,7 +4515,7 @@ def run_single_seed_dataset_benchmark(
                 prototype_scoring_mode=hierarchical_prototype_scoring_mode,
                 hidden_output_activation=hidden_output_activation,
             ),
-            sample_inputs=train_inputs,
+            sample_inputs=bootstrap_inputs,
         )
         hierarchical_anfis_training_config = TrainingConfig(
             task_type=spec.task_type,
@@ -4396,16 +4593,11 @@ def run_single_seed_dataset_benchmark(
     if tune_fuzzy_threshold and spec.task_type == "binary_classification":
         for model_name, model in trained_fuzzy_models.items():
             if tune_fuzzy_threshold_calibrated and model_prediction_postprocessors.get(model_name) is None:
-                model.eval()
-                with torch.no_grad():
-                    val_logits_raw = predict_with_optional_residual_head(
-                        model,
-                        validation_inputs.to(
-                            device=next(model.parameters()).device,
-                            dtype=torch.float32,
-                        ),
-                        top_k_rules=model_top_k_rules.get(model_name),
-                    ).detach().cpu()
+                val_logits_raw = _predict_logits_batched(
+                    model,
+                    validation_inputs,
+                    top_k_rules=model_top_k_rules.get(model_name),
+                )
                 calibrator = _fit_binary_probability_calibrator(
                     val_logits_raw,
                     validation_targets.detach().cpu(),
@@ -5683,6 +5875,12 @@ def main() -> None:
             else:
                 targets_tensor = torch.from_numpy(targets_array)
             full_inputs_tensor = torch.from_numpy(np.asarray(dataset_features).astype(np.float32))
+            full_inputs_tensor, targets_tensor = _select_bootstrap_subset(
+                full_inputs_tensor,
+                targets_tensor,
+                max_samples=80_000,
+                seed=seeds[0] + 43,
+            )
             analysis_full_inputs, analysis_full_targets, analysis_full_device = _prepare_structure_analysis_tensors(
                 inputs=full_inputs_tensor,
                 targets=targets_tensor,

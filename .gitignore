@@ -29,6 +29,8 @@ env/
 # Local outputs
 reports/
 artifacts/
+runs/
+data/external/
 !docs/artifacts/
 !docs/artifacts/**
 docs/artifacts/progress/
