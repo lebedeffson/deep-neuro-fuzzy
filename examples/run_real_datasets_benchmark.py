@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import platform
+import subprocess
 import sys
 import time
 import urllib.request
@@ -193,6 +195,42 @@ def progress_log(message: str) -> None:
     print(f"[progress {timestamp}] {message}", flush=True)
 
 
+def detect_git_revision() -> str | None:
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return revision or None
+    except Exception:
+        return None
+
+
+def collect_runtime_environment(*, requested_device: str | None) -> dict[str, object]:
+    cuda_available = bool(torch.cuda.is_available())
+    gpu_names: list[str] = []
+    if cuda_available:
+        for idx in range(int(torch.cuda.device_count())):
+            try:
+                gpu_names.append(str(torch.cuda.get_device_name(idx)))
+            except Exception:
+                gpu_names.append(f"cuda:{idx}")
+    return {
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "torch_version": str(torch.__version__),
+        "cuda_compiled_version": str(torch.version.cuda) if torch.version.cuda is not None else None,
+        "cuda_available": cuda_available,
+        "cuda_device_count": int(torch.cuda.device_count()) if cuda_available else 0,
+        "cuda_devices": gpu_names,
+        "requested_device": requested_device if requested_device is not None else "default",
+        "git_revision": detect_git_revision(),
+        "command": " ".join(sys.argv),
+    }
+
+
 def parse_seeds(raw: str) -> tuple[int, ...]:
     seeds = tuple(int(chunk.strip()) for chunk in raw.split(",") if chunk.strip())
     if not seeds:
@@ -200,11 +238,76 @@ def parse_seeds(raw: str) -> tuple[int, ...]:
     return seeds
 
 
+DEFAULT_SEED_POOL: tuple[int, ...] = (
+    19,
+    23,
+    29,
+    31,
+    37,
+    41,
+    43,
+    47,
+    53,
+    59,
+    61,
+    67,
+    71,
+    73,
+    79,
+    83,
+    89,
+    97,
+    101,
+    103,
+    107,
+    109,
+    113,
+    127,
+    131,
+    137,
+    139,
+    149,
+    151,
+    157,
+)
+
+
+def resolve_seeds(raw: str, seed_count: int | None) -> tuple[int, ...]:
+    explicit = parse_seeds(raw)
+    if seed_count is None or int(seed_count) <= 0:
+        return explicit
+    n = int(seed_count)
+    if n <= len(DEFAULT_SEED_POOL):
+        return DEFAULT_SEED_POOL[:n]
+    # Extend deterministically by stepping odd numbers and selecting probable primes.
+    extra: list[int] = list(DEFAULT_SEED_POOL)
+    candidate = extra[-1] + 2
+    while len(extra) < n:
+        is_prime = True
+        divisor = 3
+        while divisor * divisor <= candidate:
+            if candidate % divisor == 0:
+                is_prime = False
+                break
+            divisor += 2
+        if is_prime:
+            extra.append(candidate)
+        candidate += 2
+    return tuple(extra[:n])
+
+
 def parse_dataset_names(raw: str) -> tuple[str, ...]:
     names = tuple(chunk.strip() for chunk in raw.split(",") if chunk.strip())
     if not names:
         raise ValueError("At least one dataset name must be provided.")
     return names
+
+
+def parse_dataset_suite(raw: str | None) -> str:
+    source = str(raw or "").strip().lower()
+    if not source:
+        return "custom"
+    return source
 
 
 def parse_fuzzy_model_names(raw: str) -> tuple[str, ...]:
@@ -517,6 +620,44 @@ DATASETS: dict[str, DatasetSpec] = {
         name="kddcup99_binary_full",
         task_type="binary_classification",
         loader=_load_kddcup99_binary_full,
+    ),
+}
+
+DATASET_SUITES: dict[str, tuple[str, ...]] = {
+    # Historical compact benchmark (main block in paper).
+    "paper_main": (
+        "diabetes",
+        "linnerud_weight",
+        "breast_cancer",
+        "wine_binary",
+        "digits_binary",
+    ),
+    # Historical extended benchmark (paper extended block).
+    "paper_extended": (
+        "california_housing",
+        "covtype_binary_20000",
+    ),
+    # Full paper benchmark blocks together.
+    "paper_all": (
+        "diabetes",
+        "linnerud_weight",
+        "breast_cancer",
+        "wine_binary",
+        "digits_binary",
+        "california_housing",
+        "covtype_binary_20000",
+    ),
+    # Larger-scale tabular suite for stronger post-review evidence.
+    "q1_large": (
+        "covtype_binary_full",
+        "susy_binary_200000",
+        "kddcup99_binary_10percent",
+    ),
+    # Most expensive stress suite (use GPU-friendly options).
+    "q1_full": (
+        "covtype_binary_full",
+        "susy_binary_1000000",
+        "kddcup99_binary_full",
     ),
 }
 
@@ -3653,6 +3794,7 @@ def run_single_seed_dataset_benchmark(
     batch_size: int,
     patience: int,
     classification_threshold: float,
+    rule_probability_threshold: float,
     tune_fuzzy_threshold: bool,
     tune_fuzzy_threshold_calibrated: bool,
     dffl_one_phase: bool,
@@ -4584,6 +4726,7 @@ def run_single_seed_dataset_benchmark(
             task_type=spec.task_type,
             random_state=seed,
             classification_threshold=classification_threshold,
+            rule_probability_threshold=rule_probability_threshold,
         )
         progress_log(f"seed={seed} sklearn: done in {time.perf_counter() - phase_started_at:.2f}s")
 
@@ -4630,6 +4773,7 @@ def run_single_seed_dataset_benchmark(
             test_inputs=test_inputs,
             test_targets=test_targets,
             classification_threshold=model_thresholds[model_name],
+            rule_probability_threshold=rule_probability_threshold,
             top_k_rules=model_top_k_rules.get(model_name),
             prediction_postprocessor=model_prediction_postprocessors.get(model_name),
         )
@@ -5086,16 +5230,30 @@ def _summarize_dffl_architecture(
 def build_reproducibility_manifest_payload(
     *,
     args: argparse.Namespace,
+    dataset_suite: str,
     dataset_names: tuple[str, ...],
     seeds: tuple[int, ...],
     fuzzy_models: tuple[str, ...],
     dffl_dataset_overrides: Mapping[str, Mapping[str, Any]] | None,
     dataset_protocols: dict[str, dict[str, object]],
 ) -> dict[str, object]:
+    seed_selection_policy = "deterministic_pool" if int(args.seed_count) > 0 else "explicit_argument"
     return {
         "generated_utc": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "script": "examples/run_real_datasets_benchmark.py",
+        "runtime_environment": collect_runtime_environment(requested_device=args.device),
         "protocol": {
+            "dataset_selection": {
+                "dataset_suite": str(dataset_suite),
+                "datasets_argument": str(args.datasets),
+                "dataset_count_effective": int(len(dataset_names)),
+            },
+            "seed_selection": {
+                "policy": seed_selection_policy,
+                "seeds_argument": str(args.seeds),
+                "seed_count_requested": int(args.seed_count),
+                "seed_count_effective": int(len(seeds)),
+            },
             "datasets": list(dataset_names),
             "seeds": list(seeds),
             "split": {
@@ -5181,10 +5339,11 @@ def build_reproducibility_manifest_payload(
             "evaluation": {
                 "primary_metrics": {"regression": "rmse", "binary_classification": "f1"},
                 "classification_threshold_default": float(args.classification_threshold),
+                "rule_probability_threshold": float(args.rule_probability_threshold),
                 "tune_fuzzy_threshold": bool(args.tune_fuzzy_threshold),
                 "tune_fuzzy_threshold_calibrated": bool(args.tune_fuzzy_threshold_calibrated),
                 "threshold_tuning_grid_if_enabled": "0.05..0.95 step=0.01 on validation split",
-                "active_rule_criterion": "rule_probability >= 0.5",
+                "active_rule_criterion": f"rule_probability >= {float(args.rule_probability_threshold):.3f}",
                 "stability_metrics": [
                     "active_rule_jaccard",
                     "decision_active_rule_jaccard",
@@ -5269,11 +5428,14 @@ def build_reproducibility_manifest_payload(
 
 def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     protocol = payload["protocol"]
+    dataset_selection = protocol["dataset_selection"]
+    seed_selection = protocol["seed_selection"]
     split = protocol["split"]
     preprocessing = protocol["preprocessing"]
     execution = protocol["execution"]
     training = protocol["training_budgets"]
     evaluation = protocol["evaluation"]
+    runtime = payload.get("runtime_environment", {})
 
     lines: list[str] = []
     lines.append("# Reproducibility Manifest")
@@ -5282,6 +5444,31 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     lines.append(f"- script: `{payload['script']}`")
     lines.append(f"- datasets: `{', '.join(protocol['datasets'])}`")
     lines.append(f"- seeds: `{', '.join(str(seed) for seed in protocol['seeds'])}`")
+    lines.append("")
+    lines.append("## Dataset/Seed Selection")
+    lines.append("")
+    lines.append(f"- dataset_suite: `{dataset_selection['dataset_suite']}`")
+    lines.append(f"- datasets_argument: `{dataset_selection['datasets_argument']}`")
+    lines.append(f"- dataset_count_effective: `{dataset_selection['dataset_count_effective']}`")
+    lines.append(f"- seed_policy: `{seed_selection['policy']}`")
+    lines.append(f"- seeds_argument: `{seed_selection['seeds_argument']}`")
+    lines.append(f"- seed_count_requested: `{seed_selection['seed_count_requested']}`")
+    lines.append(f"- seed_count_effective: `{seed_selection['seed_count_effective']}`")
+    lines.append("")
+    lines.append("## Runtime Environment")
+    lines.append("")
+    lines.append(f"- python_version: `{runtime.get('python_version', 'unknown')}`")
+    lines.append(f"- platform: `{runtime.get('platform', 'unknown')}`")
+    lines.append(f"- torch_version: `{runtime.get('torch_version', 'unknown')}`")
+    lines.append(f"- cuda_compiled_version: `{runtime.get('cuda_compiled_version', 'none')}`")
+    lines.append(f"- cuda_available: `{runtime.get('cuda_available', False)}`")
+    lines.append(f"- cuda_device_count: `{runtime.get('cuda_device_count', 0)}`")
+    lines.append(
+        f"- cuda_devices: `{', '.join(runtime.get('cuda_devices', [])) if runtime.get('cuda_devices') else 'none'}`"
+    )
+    lines.append(f"- requested_device: `{runtime.get('requested_device', 'default')}`")
+    lines.append(f"- git_revision: `{runtime.get('git_revision', 'unknown')}`")
+    lines.append(f"- command: `{runtime.get('command', '')}`")
     lines.append("")
     lines.append("## Split Protocol")
     lines.append("")
@@ -5336,6 +5523,7 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     lines.append("")
     lines.append(f"- primary_metrics: `{evaluation['primary_metrics']}`")
     lines.append(f"- classification_threshold_default: `{evaluation['classification_threshold_default']}`")
+    lines.append(f"- rule_probability_threshold: `{evaluation['rule_probability_threshold']}`")
     lines.append(f"- tune_fuzzy_threshold: `{evaluation['tune_fuzzy_threshold']}`")
     lines.append(f"- tune_fuzzy_threshold_calibrated: `{evaluation['tune_fuzzy_threshold_calibrated']}`")
     lines.append(f"- threshold_tuning_grid_if_enabled: {evaluation['threshold_tuning_grid_if_enabled']}")
@@ -5345,32 +5533,35 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     lines.append("## Dataset-Specific DFFL Resolution")
     lines.append("")
     lines.append(
-        "| dataset | task | n_samples | input_dim | profile_resolved | geom_req | geom_eff | one_phase | lr_effective | "
-        "groups | stage1_width | stage2_width_total | decision_max_rules |"
+        "| dataset | task | n_samples | input_dim | runtime_s | profile_resolved | geom_req | geom_eff | one_phase | "
+        "lr_effective | groups | stage1_width | stage2_width_total | decision_max_rules |"
     )
-    lines.append("| --- | --- | ---: | ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |")
     for dataset_name, entry in payload["dataset_specific_protocols"].items():
         dffl = entry["dffl"]
+        runtime_seconds = float(entry.get("runtime_seconds", 0.0))
         if not bool(dffl.get("enabled", True)):
             lines.append(
-                "| {dataset} | {task} | {n_samples} | {input_dim} | {profile} | n/a | n/a | disabled | 0.000000 | "
-                "0 | 0 | 0 | 0 |".format(
+                "| {dataset} | {task} | {n_samples} | {input_dim} | {runtime:.2f} | {profile} | n/a | n/a | disabled | "
+                "0.000000 | 0 | 0 | 0 | 0 |".format(
                     dataset=dataset_name,
                     task=entry["task_type"],
                     n_samples=entry["n_samples"],
                     input_dim=entry["input_dim"],
+                    runtime=runtime_seconds,
                     profile=dffl["resolved_profile"],
                 )
             )
             continue
         arch = dffl["architecture"]
         lines.append(
-            "| {dataset} | {task} | {n_samples} | {input_dim} | {profile} | {geom_req} | {geom_eff} | {one_phase} | {lr:.6f} | "
-            "{groups} | {s1} | {s2} | {dec_rules} |".format(
+            "| {dataset} | {task} | {n_samples} | {input_dim} | {runtime:.2f} | {profile} | {geom_req} | {geom_eff} | "
+            "{one_phase} | {lr:.6f} | {groups} | {s1} | {s2} | {dec_rules} |".format(
                 dataset=dataset_name,
                 task=entry["task_type"],
                 n_samples=entry["n_samples"],
                 input_dim=entry["input_dim"],
+                runtime=runtime_seconds,
                 profile=dffl["resolved_profile"],
                 geom_req=dffl.get("feature_geometry_requested", "n/a"),
                 geom_eff=dffl.get("feature_geometry_effective", "n/a"),
@@ -5397,12 +5588,31 @@ def main() -> None:
         description="Run a unified multi-seed benchmark on 3-5 real tabular datasets for stacked/hierarchical/DFFL models."
     )
     parser.add_argument(
+        "--dataset-suite",
+        type=str,
+        default="custom",
+        choices=("custom",) + tuple(DATASET_SUITES.keys()),
+        help=(
+            "Named dataset suite. If not 'custom', overrides --datasets. "
+            "Use paper_main/paper_extended/paper_all/q1_large/q1_full."
+        ),
+    )
+    parser.add_argument(
         "--datasets",
         type=str,
         default="diabetes,linnerud_weight,breast_cancer,wine_binary,digits_binary",
         help="Comma-separated dataset names.",
     )
     parser.add_argument("--seeds", type=str, default="19,23,29")
+    parser.add_argument(
+        "--seed-count",
+        type=int,
+        default=0,
+        help=(
+            "If >0, ignore --seeds and use first N deterministic seeds from the internal seed pool "
+            "(recommended: 10-30 for stability analysis)."
+        ),
+    )
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--validation-size", type=float, default=0.2)
     parser.add_argument("--train-noise-sigma", type=float, default=0.0)
@@ -5637,6 +5847,12 @@ def main() -> None:
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--classification-threshold", type=float, default=0.5)
     parser.add_argument(
+        "--rule-probability-threshold",
+        type=float,
+        default=0.5,
+        help="Rule probability threshold used for active-rule structural/stability metrics.",
+    )
+    parser.add_argument(
         "--tune-fuzzy-threshold",
         action="store_true",
         help=(
@@ -5698,12 +5914,18 @@ def main() -> None:
     args.binary_heavy_grouping = _validate_binary_heavy_grouping_mode(args.binary_heavy_grouping)
     dffl_dataset_overrides = parse_dffl_dataset_overrides(args.dffl_dataset_overrides)
 
-    dataset_names = parse_dataset_names(args.datasets)
+    dataset_suite = parse_dataset_suite(args.dataset_suite)
+    if dataset_suite != "custom":
+        dataset_names = DATASET_SUITES[dataset_suite]
+    else:
+        dataset_names = parse_dataset_names(args.datasets)
     unknown = [name for name in dataset_names if name not in DATASETS]
     if unknown:
         raise ValueError(f"Unknown dataset names: {', '.join(unknown)}. Available: {', '.join(DATASETS.keys())}")
 
-    seeds = parse_seeds(args.seeds)
+    seeds = resolve_seeds(args.seeds, args.seed_count)
+    if not 0.0 < float(args.rule_probability_threshold) < 1.0:
+        raise ValueError("--rule-probability-threshold must lie in (0, 1).")
     fuzzy_models = parse_fuzzy_model_names(args.fuzzy_models)
     fuzzy_distill_models = parse_optional_fuzzy_model_names(args.fuzzy_distill_models)
     fuzzy_hard_sample_models = parse_optional_fuzzy_model_names(args.fuzzy_hard_sample_models)
@@ -5714,6 +5936,7 @@ def main() -> None:
     dataset_protocols: dict[str, dict[str, object]] = {}
 
     for dataset_name in dataset_names:
+        dataset_started_at = time.perf_counter()
         spec = DATASETS[dataset_name]
         dataset_features, dataset_targets = spec.loader()
         resolved_profile = resolve_dffl_profile(
@@ -5844,6 +6067,7 @@ def main() -> None:
                 classification_threshold=args.classification_threshold,
                 tune_fuzzy_threshold=args.tune_fuzzy_threshold,
                 tune_fuzzy_threshold_calibrated=args.tune_fuzzy_threshold_calibrated,
+                rule_probability_threshold=float(args.rule_probability_threshold),
                 dffl_one_phase=args.dffl_one_phase,
                 device=args.device,
                 fuzzy_models=fuzzy_models,
@@ -5955,6 +6179,7 @@ def main() -> None:
             "n_samples": n_samples,
             "input_dim": input_dim,
             "primary_metric": PRIMARY_METRIC[spec.task_type],
+            "runtime_seconds": float(time.perf_counter() - dataset_started_at),
             "architectures": {
                 "ruanfis_shallow": _summarize_shallow_architecture(input_dim),
                 "ruanfis_stacked_anfis": _summarize_stacked_architecture(input_dim),
@@ -5980,6 +6205,7 @@ def main() -> None:
     )
     reproducibility_manifest_payload = build_reproducibility_manifest_payload(
         args=args,
+        dataset_suite=dataset_suite,
         dataset_names=dataset_names,
         seeds=seeds,
         fuzzy_models=fuzzy_models,
@@ -5990,7 +6216,10 @@ def main() -> None:
 
     full_report_sections = [
         "UNIFIED REAL-DATASET BENCHMARK",
+        f"dataset_suite: {dataset_suite}",
         f"datasets: {', '.join(dataset_names)}",
+        f"seed_policy: {'deterministic_pool' if int(args.seed_count) > 0 else 'explicit_argument'}",
+        f"seed_count_requested: {args.seed_count}",
         f"seeds: {', '.join(str(seed) for seed in seeds)}",
         f"train_noise_sigma (regression only): {args.train_noise_sigma:.4f}",
         f"dffl_profile: {args.dffl_profile}",
@@ -6032,6 +6261,7 @@ def main() -> None:
         f"stacked_final_skip_gate_l1_weight: {args.stacked_final_skip_gate_l1_weight}",
         f"tune_fuzzy_threshold: {args.tune_fuzzy_threshold}",
         f"tune_fuzzy_threshold_calibrated: {args.tune_fuzzy_threshold_calibrated}",
+        f"rule_probability_threshold: {args.rule_probability_threshold}",
         f"sklearn_baselines: {'off' if args.skip_sklearn else 'on'}",
         "",
     ]
@@ -6069,7 +6299,10 @@ def main() -> None:
 
     if args.json_output is not None:
         payload = {
+            "dataset_suite": str(dataset_suite),
             "datasets": list(dataset_names),
+            "seed_policy": "deterministic_pool" if int(args.seed_count) > 0 else "explicit_argument",
+            "seed_count_requested": int(args.seed_count),
             "seeds": list(seeds),
             "train_noise_sigma": float(args.train_noise_sigma),
             "dffl_profile": args.dffl_profile,
@@ -6100,6 +6333,7 @@ def main() -> None:
             "fuzzy_hard_sample_teacher_trees": int(args.fuzzy_hard_sample_teacher_trees),
             "tune_fuzzy_threshold": bool(args.tune_fuzzy_threshold),
             "tune_fuzzy_threshold_calibrated": bool(args.tune_fuzzy_threshold_calibrated),
+            "rule_probability_threshold": float(args.rule_probability_threshold),
             "skip_sklearn": bool(args.skip_sklearn),
             "dataset_results": {
                 dataset_name: serialize_multi_seed_benchmark_result(result)

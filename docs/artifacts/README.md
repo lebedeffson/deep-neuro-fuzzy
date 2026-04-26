@@ -89,3 +89,22 @@ python examples/run_real_datasets_benchmark.py \
   --fuzzy-hard-sample-teacher-trees 400 \
   --output-dir runs/covtypefull_stacked_w30_r30_s32_d015_t600_hs25_3s_2026-04-26
 ```
+
+Q1-style larger suite (deterministic 10 seeds, fuzzy-only):
+
+```bash
+python examples/run_real_datasets_benchmark.py \
+  --dataset-suite q1_large \
+  --seed-count 10 \
+  --gpu-only \
+  --fuzzy-models all \
+  --dffl-profile quality_auto \
+  --tune-fuzzy-threshold \
+  --rule-probability-threshold 0.5 \
+  --output-dir runs/q1_large_all_models_10s
+```
+
+Notes:
+- `--dataset-suite` provides fixed dataset bundles (`paper_main`, `paper_extended`, `paper_all`, `q1_large`, `q1_full`).
+- `--seed-count N` uses deterministic internal seed pool (good for 10-30 seed stability runs).
+- `--rule-probability-threshold` controls active-rule/stability metric threshold and is stored in reproducibility manifest.
