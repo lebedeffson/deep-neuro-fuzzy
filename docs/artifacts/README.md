@@ -20,14 +20,15 @@ We use two large-scale tabular datasets:
 | hist gradient boosting | 0.8321 |
 | MLP | 0.8591 |
 | hierarchical fuzzy | 0.9033 |
-| stacked fuzzy (tuned) | **0.9273 +/- 0.0020** |
+| stacked fuzzy (tuned, 3 seeds) | **0.9466 +/- 0.0015** |
 | Extra Trees | 0.9543 |
 | Random Forest | 0.9560 |
 
 Key promoted stacked metrics on Covtype full:
-- `F1 = 0.9273 +/- 0.0020`
-- `ROC-AUC = 0.9817 +/- 0.0008`
-- `PR-AUC = 0.9803 +/- 0.0008`
+- `F1 = 0.9466 +/- 0.0015`
+- `ROC-AUC = 0.9895 +/- 0.0005`
+- `PR-AUC = 0.9886 +/- 0.0005`
+- `active rules = 77.33 +/- 7.41` (of 150 total)
 
 Main claim supported by this dataset:
 - stacked deep ANFIS is clearly stronger than other fuzzy/neural/linear baselines,
@@ -66,17 +67,25 @@ python examples/run_real_datasets_benchmark.py \
   --fuzzy-models stacked \
   --max-epochs 40 \
   --patience 8 \
-  --batch-size 4096 \
+  --batch-size 2048 \
   --tune-fuzzy-threshold \
   --tune-fuzzy-threshold-calibrated \
-  --stacked-width-scale 2.0 \
-  --stacked-rule-scale 2.0 \
-  --stacked-final-skip-inputs 24 \
+  --stacked-width-scale 3.0 \
+  --stacked-rule-scale 3.0 \
+  --stacked-final-skip-inputs 32 \
   --stacked-final-skip-mode target_corr_diverse \
   --stacked-final-skip-gates \
   --stacked-final-skip-gate-l1-weight 0.0001 \
-  --fuzzy-distill-weight 0.1 \
+  --fuzzy-distill-weight 0.15 \
   --fuzzy-distill-models stacked \
-  --fuzzy-distill-teacher-trees 400 \
-  --output-dir runs/covtype_full_stacked_w20_r20_skip24_distill010_3s
+  --fuzzy-distill-teacher-trees 600 \
+  --fuzzy-hard-sample-training \
+  --fuzzy-hard-sample-models stacked \
+  --fuzzy-hard-sample-source baseline \
+  --fuzzy-hard-sample-fraction 0.25 \
+  --fuzzy-hard-sample-multiplier 2 \
+  --fuzzy-hard-sample-finetune-epochs 12 \
+  --fuzzy-hard-sample-finetune-patience 3 \
+  --fuzzy-hard-sample-teacher-trees 400 \
+  --output-dir runs/covtypefull_stacked_w30_r30_s32_d015_t600_hs25_3s_2026-04-26
 ```
