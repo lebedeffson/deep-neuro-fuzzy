@@ -5159,6 +5159,18 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     lines.append("| --- | --- | ---: | ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |")
     for dataset_name, entry in payload["dataset_specific_protocols"].items():
         dffl = entry["dffl"]
+        if not bool(dffl.get("enabled", True)):
+            lines.append(
+                "| {dataset} | {task} | {n_samples} | {input_dim} | {profile} | n/a | n/a | disabled | 0.000000 | "
+                "0 | 0 | 0 | 0 |".format(
+                    dataset=dataset_name,
+                    task=entry["task_type"],
+                    n_samples=entry["n_samples"],
+                    input_dim=entry["input_dim"],
+                    profile=dffl["resolved_profile"],
+                )
+            )
+            continue
         arch = dffl["architecture"]
         lines.append(
             "| {dataset} | {task} | {n_samples} | {input_dim} | {profile} | {geom_req} | {geom_eff} | {one_phase} | {lr:.6f} | "
@@ -5663,59 +5675,52 @@ def main() -> None:
         )
         input_dim = int(dataset_features.shape[1])
         n_samples = int(dataset_features.shape[0])
-        targets_array = np.asarray(dataset_targets).astype(np.float32)
-        if targets_array.ndim == 1:
-            targets_tensor = torch.from_numpy(targets_array.reshape(-1, 1))
-        else:
-            targets_tensor = torch.from_numpy(targets_array)
-        full_inputs_tensor = torch.from_numpy(np.asarray(dataset_features).astype(np.float32))
-        analysis_full_inputs, analysis_full_targets, analysis_full_device = _prepare_structure_analysis_tensors(
-            inputs=full_inputs_tensor,
-            targets=targets_tensor,
-            device=args.device,
-        )
-        dataset_feature_geometry_effective, dataset_feature_geometry_policy = _resolve_effective_feature_geometry(
-            requested_geometry=args.feature_geometry,
-            profile=resolved_profile,
-            train_inputs=analysis_full_inputs,
-            train_targets=analysis_full_targets,
-        )
-        dffl_groups = make_dffl_input_groups(
-            resolved_profile,
-            train_inputs=analysis_full_inputs,
-            train_targets=analysis_full_targets,
-            feature_geometry=dataset_feature_geometry_effective,
-            binary_heavy_grouping_mode=args.binary_heavy_grouping,
-        )
-        dffl_bridge_pairs = make_dffl_bridge_pairs(
-            resolved_profile,
-            train_inputs=analysis_full_inputs,
-            train_targets=analysis_full_targets,
-            input_groups=dffl_groups,
-            feature_geometry=dataset_feature_geometry_effective,
-            adaptive_budget_enabled=not args.disable_dffl_adaptive_budget,
-        )
-        dffl_intergroup_share = estimate_intergroup_interaction_share(
-            train_inputs=analysis_full_inputs,
-            train_targets=analysis_full_targets,
-            input_groups=dffl_groups,
-        )
-        dffl_lr_effective = (
-            args.dffl_learning_rate * resolved_profile.learning_rate_scale_classification
-            if spec.task_type == "binary_classification"
-            else args.dffl_learning_rate * resolved_profile.learning_rate_scale_regression
-        )
-        dataset_protocols[dataset_name] = {
-            "task_type": spec.task_type,
-            "n_samples": n_samples,
-            "input_dim": input_dim,
-            "primary_metric": PRIMARY_METRIC[spec.task_type],
-            "architectures": {
-                "ruanfis_shallow": _summarize_shallow_architecture(input_dim),
-                "ruanfis_stacked_anfis": _summarize_stacked_architecture(input_dim),
-                "ruanfis_hierarchical_anfis": _summarize_hierarchical_anfis_architecture(input_dim),
-            },
-            "dffl": {
+        dffl_protocol: dict[str, object]
+        if "ruanfis_refined_deep" in fuzzy_models:
+            targets_array = np.asarray(dataset_targets).astype(np.float32)
+            if targets_array.ndim == 1:
+                targets_tensor = torch.from_numpy(targets_array.reshape(-1, 1))
+            else:
+                targets_tensor = torch.from_numpy(targets_array)
+            full_inputs_tensor = torch.from_numpy(np.asarray(dataset_features).astype(np.float32))
+            analysis_full_inputs, analysis_full_targets, analysis_full_device = _prepare_structure_analysis_tensors(
+                inputs=full_inputs_tensor,
+                targets=targets_tensor,
+                device=args.device,
+            )
+            dataset_feature_geometry_effective, dataset_feature_geometry_policy = _resolve_effective_feature_geometry(
+                requested_geometry=args.feature_geometry,
+                profile=resolved_profile,
+                train_inputs=analysis_full_inputs,
+                train_targets=analysis_full_targets,
+            )
+            dffl_groups = make_dffl_input_groups(
+                resolved_profile,
+                train_inputs=analysis_full_inputs,
+                train_targets=analysis_full_targets,
+                feature_geometry=dataset_feature_geometry_effective,
+                binary_heavy_grouping_mode=args.binary_heavy_grouping,
+            )
+            dffl_bridge_pairs = make_dffl_bridge_pairs(
+                resolved_profile,
+                train_inputs=analysis_full_inputs,
+                train_targets=analysis_full_targets,
+                input_groups=dffl_groups,
+                feature_geometry=dataset_feature_geometry_effective,
+                adaptive_budget_enabled=not args.disable_dffl_adaptive_budget,
+            )
+            dffl_intergroup_share = estimate_intergroup_interaction_share(
+                train_inputs=analysis_full_inputs,
+                train_targets=analysis_full_targets,
+                input_groups=dffl_groups,
+            )
+            dffl_lr_effective = (
+                args.dffl_learning_rate * resolved_profile.learning_rate_scale_classification
+                if spec.task_type == "binary_classification"
+                else args.dffl_learning_rate * resolved_profile.learning_rate_scale_regression
+            )
+            dffl_protocol = {
+                "enabled": True,
                 "resolved_profile": resolved_profile.name,
                 "feature_geometry_requested": str(args.feature_geometry),
                 "feature_geometry_effective": dataset_feature_geometry_effective,
@@ -5740,7 +5745,24 @@ def main() -> None:
                     intergroup_interaction_share=dffl_intergroup_share,
                     adaptive_budget_enabled=not args.disable_dffl_adaptive_budget,
                 ),
+            }
+        else:
+            dffl_protocol = {
+                "enabled": False,
+                "resolved_profile": resolved_profile.name,
+                "skip_reason": "DFFL model was not requested for this run.",
+            }
+        dataset_protocols[dataset_name] = {
+            "task_type": spec.task_type,
+            "n_samples": n_samples,
+            "input_dim": input_dim,
+            "primary_metric": PRIMARY_METRIC[spec.task_type],
+            "architectures": {
+                "ruanfis_shallow": _summarize_shallow_architecture(input_dim),
+                "ruanfis_stacked_anfis": _summarize_stacked_architecture(input_dim),
+                "ruanfis_hierarchical_anfis": _summarize_hierarchical_anfis_architecture(input_dim),
             },
+            "dffl": dffl_protocol,
         }
 
         if args.output_dir is not None:
