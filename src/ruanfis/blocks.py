@@ -212,6 +212,7 @@ class SugenoDecisionLayer(BaseFuzzyRuleLayer):
         rule_base: RuleBase | Sequence[RuleSpec],
         output_dim: int,
         output_names: Sequence[str] | None = None,
+        output_activation: str | None = None,
         epsilon: float = 1e-8,
     ) -> None:
         super().__init__(name=name, variables=variables, rule_base=rule_base, epsilon=epsilon)
@@ -219,6 +220,12 @@ class SugenoDecisionLayer(BaseFuzzyRuleLayer):
             raise ValueError("The output dimension must be positive.")
         if output_names is not None and len(output_names) != output_dim:
             raise ValueError("The number of output names must match output_dim.")
+        activation = "identity" if output_activation is None else str(output_activation).strip().lower()
+        if activation not in {"identity", "sigmoid"}:
+            raise ValueError(
+                f"Unsupported output_activation={output_activation!r}. Expected None, 'identity', or 'sigmoid'."
+            )
+        self.output_activation = activation
         self._output_dim = int(output_dim)
         self.output_names = tuple(output_names) if output_names is not None else tuple(
             f"{name}_output_{index}" for index in range(self._output_dim)
@@ -241,6 +248,8 @@ class SugenoDecisionLayer(BaseFuzzyRuleLayer):
         normalized_rule_weights = self._normalize_rule_weights(raw_rule_weights, top_k_rules=top_k_rules)
         rule_outputs = torch.einsum("bi, rio -> bro", inputs, self.rule_weights) + self.rule_bias.unsqueeze(0)
         outputs = (normalized_rule_weights.unsqueeze(-1) * rule_outputs).sum(dim=1)
+        if self.output_activation == "sigmoid":
+            outputs = torch.sigmoid(outputs)
         return outputs, memberships, raw_rule_weights, normalized_rule_weights, rule_outputs
 
     def forward(self, inputs: Tensor, top_k_rules: int | None = None) -> Tensor:

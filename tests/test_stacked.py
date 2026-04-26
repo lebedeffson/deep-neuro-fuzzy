@@ -6,6 +6,7 @@ from ruanfis.stacked import (
     StackedAnfisLayerConfig,
     StackedAnfisModel,
     StackedAnfisModelConfig,
+    build_stagewise_initialized_stacked_anfis_model,
     build_stacked_anfis_model,
 )
 from ruanfis.trainer import FuzzyTrainer, TrainingConfig
@@ -54,6 +55,113 @@ def test_stacked_builder_constructs_trainable_model() -> None:
 
     outputs = model(torch.rand(5, 4))
     assert outputs.shape == (5, 1)
+
+
+def test_stacked_hidden_layers_can_use_bounded_outputs() -> None:
+    config = StackedAnfisModelConfig(
+        input_dim=2,
+        layers=(
+            StackedAnfisLayerConfig(
+                name="hidden",
+                variables=(_var3("x0"), _var3("x1")),
+                output_dim=2,
+                output_activation="sigmoid",
+                max_rule_arity=1,
+                max_rules=4,
+            ),
+            StackedAnfisLayerConfig(
+                name="decision",
+                variables=(_var3("h0"), _var3("h1")),
+                output_dim=1,
+                max_rule_arity=1,
+                max_rules=4,
+            ),
+        ),
+    )
+    model = build_stacked_anfis_model(config)
+
+    features = model.forward_features(torch.rand(8, 2))
+
+    assert torch.all(features >= 0.0)
+    assert torch.all(features <= 1.0)
+
+
+def test_stagewise_initialized_stacked_builder_constructs_model() -> None:
+    torch.manual_seed(11)
+    inputs = torch.rand(48, 4)
+    targets = (inputs[:, :1] > 0.5).to(dtype=torch.float32)
+
+    model = build_stagewise_initialized_stacked_anfis_model(
+        _config(),
+        sample_inputs=inputs,
+        sample_targets=targets,
+        task_type="binary_classification",
+        epochs_per_hidden_layer=1,
+        learning_rate=0.01,
+        batch_size=16,
+        shuffle=False,
+    )
+
+    assert isinstance(model, StackedAnfisModel)
+    assert model(inputs).shape == (48, 1)
+
+
+def test_stacked_final_layer_can_receive_raw_skip_inputs() -> None:
+    config = StackedAnfisModelConfig(
+        input_dim=3,
+        final_skip_input_indices=(0, 2),
+        layers=(
+            StackedAnfisLayerConfig(
+                name="hidden",
+                variables=(_var3("x0"), _var3("x1"), _var3("x2")),
+                output_dim=2,
+                max_rule_arity=1,
+                max_rules=4,
+            ),
+            StackedAnfisLayerConfig(
+                name="decision",
+                variables=(_var3("h0"), _var3("h1"), _var3("x0"), _var3("x2")),
+                output_dim=1,
+                max_rule_arity=1,
+                max_rules=4,
+            ),
+        ),
+    )
+    model = build_stacked_anfis_model(config, sample_inputs=torch.rand(12, 3))
+
+    features = model.forward_features(torch.rand(5, 3))
+
+    assert features.shape == (5, 4)
+    assert model(torch.rand(5, 3)).shape == (5, 1)
+
+
+def test_stacked_skip_gates_are_initialized_when_enabled() -> None:
+    config = StackedAnfisModelConfig(
+        input_dim=3,
+        final_skip_input_indices=(0, 2),
+        final_skip_gates_enabled=True,
+        final_skip_gate_init_logit=1.5,
+        layers=(
+            StackedAnfisLayerConfig(
+                name="hidden",
+                variables=(_var3("x0"), _var3("x1"), _var3("x2")),
+                output_dim=2,
+                max_rule_arity=1,
+                max_rules=4,
+            ),
+            StackedAnfisLayerConfig(
+                name="decision",
+                variables=(_var3("h0"), _var3("h1"), _var3("x0"), _var3("x2")),
+                output_dim=1,
+                max_rule_arity=1,
+                max_rules=4,
+            ),
+        ),
+    )
+    model = build_stacked_anfis_model(config, sample_inputs=torch.rand(12, 3))
+
+    assert model.final_skip_gate_logits is not None
+    assert model.final_skip_gate_logits.shape == (2,)
 
 
 def test_stacked_builder_validates_layer_width() -> None:

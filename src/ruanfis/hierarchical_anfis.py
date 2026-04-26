@@ -18,6 +18,7 @@ class HierarchicalAnfisBlockConfig:
     variables: tuple[FuzzyVariable, ...]
     output_dim: int
     output_names: tuple[str, ...] | None = None
+    output_activation: str | None = None
     max_rule_arity: int | None = None
     max_rules: int | None = None
     gate_init: float = 0.0
@@ -62,6 +63,7 @@ def _as_decision_config(block: HierarchicalAnfisBlockConfig) -> DecisionLayerCon
         variables=block.variables,
         output_dim=block.output_dim,
         output_names=block.output_names,
+        output_activation=block.output_activation,
         max_rule_arity=block.max_rule_arity,
         max_rules=block.max_rules,
         gate_init=block.gate_init,

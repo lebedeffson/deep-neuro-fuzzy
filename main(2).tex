@@ -41,7 +41,7 @@
 \maketitle
 
 \begin{abstract}
-This paper investigates how additional complexity can be introduced into neuro-fuzzy models while preserving structural interpretability of the internal inference process. We compare four architectures built on a shared neuro-fuzzy inference principle: a shallow model, a stacked model, a hierarchical model, and Deep Fuzzy Feature Learning (DFFL). The evaluation is conducted in a unified experimental framework and considers three complementary criteria: predictive performance, rule-base complexity, and the reproducibility of internal rule activation across independent runs. The results show that stacked provides the strongest average-rank profile in the main comparison block, while DFFL is competitive on selected tasks but does not dominate external baselines and, under quality-oriented tuning, exhibits lower active-rule reproducibility than the strongest stability-oriented variants. We do not claim superior predictive performance of DFFL. Instead, the results support an architectural trade-off between predictive quality, structural cost, and internal rule-structure reproducibility.
+This paper investigates how additional complexity can be introduced into neuro-fuzzy models while preserving structural interpretability of the internal inference process. We compare four architectures built on a shared neuro-fuzzy inference principle: a shallow model, a stacked model, a hierarchical model, and Deep Fuzzy Feature Learning (DFFL). The evaluation is conducted in a unified experimental framework and considers three complementary criteria: predictive performance, rule-base complexity, and the reproducibility of internal rule activation across independent runs. The results show that stacked provides the strongest average-rank profile in the main comparison block, while DFFL is competitive on selected tasks but does not dominate external baselines and, under quality-oriented tuning, exhibits lower active-rule reproducibility than the strongest stability-oriented variants. A large-scale capacity check on \textit{covtype\_binary\_200000} further shows that increasing stacked capacity and adding a gated raw-feature skip improves F1 from $0.8627\pm0.0034$ to $0.8856\pm0.0011$, while still remaining below tree ensembles. We do not claim superior predictive performance of DFFL. Instead, the results support an architectural trade-off between predictive quality, structural cost, and internal rule-structure reproducibility.
 \keywords{deep fuzzy feature learning \and neuro-fuzzy systems \and interpretable machine learning \and fuzzy inference \and deep learning}
 \end{abstract}
 
@@ -237,8 +237,8 @@ Taken together, the global stability analysis and the local case-level trace def
 \section{Results}
 
 The compared architectures differ across the three evaluation dimensions considered in this study: predictive quality, rule-base complexity, and internal rule stability. In the main comparison block, stacked provides the strongest average-rank profile, while DFFL remains competitive on selected tasks and no architecture dominates all tasks simultaneously.
-The key numerical evidence is summarized in Table~\ref{tab:main_results}, Table~\ref{tab:extended_results}, Table~\ref{tab:best_vs_baseline}, and Table~\ref{tab:all_vs_baseline}, while the quality profile across tasks is shown in Fig.~\ref{fig:quality_main} and the quality--complexity--stability trade-off is shown in Fig.~\ref{fig:complexity_stability}.
-All values in Tables~\ref{tab:main_results}--\ref{tab:all_vs_baseline} are reported as mean $\pm$ standard deviation across three seeds; per-seed values are provided in the supplementary artifacts.
+The key numerical evidence is summarized in Table~\ref{tab:main_results}, Table~\ref{tab:extended_results}, Table~\ref{tab:covtype_capacity_check}, Table~\ref{tab:best_vs_baseline}, and Table~\ref{tab:all_vs_baseline}, while the quality profile across tasks is shown in Fig.~\ref{fig:quality_main} and the quality--complexity--stability trade-off is shown in Fig.~\ref{fig:complexity_stability}.
+All values in Tables~\ref{tab:main_results}--\ref{tab:all_vs_baseline} are reported as mean $\pm$ standard deviation across three seeds; the cleaned artifact summary records the canonical settings and the large-scale Covtype values used in the final revision.
 For transparency, Table~\ref{tab:main_results} reports a unified reference run for all four neuro-fuzzy architectures under the same seeds, splits, preprocessing, and training budget.
 
 \begin{table}[H]
@@ -290,7 +290,31 @@ DFFL               & 115.67 & 0.2712 & 0.1285$\pm$0.0013 & 0.7518$\pm$0.0046 \\
 
 A different pattern emerges when the analysis shifts from predictive quality to internal rule stability. In the current quality-oriented DFFL setting, active-rule Jaccard in the main block is lower than for shallow and hierarchical variants, indicating that quality-focused tuning can reduce reproducibility of the internal active-rule configuration.
 
-To quantify the robustness of these differences, we report nonparametric tests on the benchmark summaries: Friedman test with pairwise Wilcoxon signed-rank tests and Holm correction. In the main comparison block, the dataset-level Friedman test is not significant ($\chi^2=2.04$, $p=0.6327$). In the extended block, the dataset-level Friedman test is significant ($\chi^2=6.00$, $p=0.0383$), but no pairwise comparison remains significant after Holm correction at $\alpha=0.05$. Full CI outputs are provided in the supplementary statistical report.
+Because the larger Covtype task suggested that the reference stacked model may be capacity-limited, we additionally ran a targeted large-scale capacity check on \textit{covtype\_binary\_200000}. This check is reported separately from the unified reference comparison because it changes the stacked configuration: hidden width and rule budget are increased by a factor of $1.5$, a gated final raw-feature skip with 16 selected features is enabled, and the model is weakly distilled from an Extra Trees teacher with blend weight $0.1$. The result is a stronger stacked variant with 75 rules and 16 hidden concepts.
+
+\begin{table}[H]
+\centering
+\caption{Large-scale capacity check on \textit{covtype\_binary\_200000} (mean $\pm$ std over three seeds).}
+\label{tab:covtype_capacity_check}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccccc}
+\toprule
+Model & F1 & ROC-AUC & PR-AUC & Rules & Active-rule Jaccard \\
+\midrule
+stacked reference & 0.8627$\pm$0.0034 & 0.9374$\pm$0.0036 & 0.9280$\pm$0.0055 & 50 & 0.1984 \\
+stacked capacity + skip + distill & 0.8856$\pm$0.0011 & 0.9561$\pm$0.0014 & 0.9507$\pm$0.0017 & 75 & 0.1661 \\
+hist gradient boosting & 0.8308$\pm$0.0012 & 0.9169$\pm$0.0016 & 0.9086$\pm$0.0019 & -- & -- \\
+MLP & 0.8396$\pm$0.0094 & 0.9266$\pm$0.0022 & 0.9177$\pm$0.0029 & -- & -- \\
+random forest & 0.9289$\pm$0.0014 & 0.9811$\pm$0.0008 & 0.9790$\pm$0.0010 & -- & -- \\
+extra trees & 0.9328$\pm$0.0006 & 0.9825$\pm$0.0005 & 0.9807$\pm$0.0007 & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The capacity-tuned stacked model substantially improves over the reference stacked configuration on this larger task and becomes stronger than logistic regression, histogram gradient boosting, and MLP. However, it remains below Random Forest and Extra Trees. This result is therefore used as evidence that stacked neuro-fuzzy quality can be limited by representational capacity on large tabular data, not as evidence that the model dominates tree ensembles.
+
+To quantify the robustness of these differences, we report nonparametric tests on the benchmark summaries: Friedman test with pairwise Wilcoxon signed-rank tests and Holm correction. In the main comparison block, the dataset-level Friedman test is not significant ($\chi^2=2.04$, $p=0.6327$). In the extended block, the dataset-level Friedman test is significant ($\chi^2=6.00$, $p=0.0383$), but no pairwise comparison remains significant after Holm correction at $\alpha=0.05$.
 
 The comparison with external baselines is included only to contextualize raw predictive performance. The main contribution of this study is the comparative analysis of neuro-fuzzy architectures in terms of predictive quality, rule-base complexity, and internal rule stability.
 
@@ -352,6 +376,8 @@ The ablation of the DFFL training profiles leads to the same general conclusion.
 \section{Discussion}
 
 The empirical comparison suggests that different forms of depth in neuro-fuzzy systems favor different objectives. Sequential and hierarchical organizations remain strong predictors, especially in the extended comparison. In the current quality-oriented configuration, DFFL is competitive in predictive rank but does not preserve the strongest reproducibility of active internal rule structure.
+
+The additional Covtype capacity check clarifies an important implementation-level point. The original stacked configuration was not only sensitive to optimization settings; it was also constrained by its number of rules and hidden concepts. Increasing the stacked capacity and allowing a gated final skip from selected raw features produced the strongest fuzzy result on the large Covtype task. This indicates that part of the quality gap came from information compression in the stacked representation. At the same time, the gain required a larger rule budget and reduced active-rule Jaccard, so the improvement again follows a quality--complexity--stability trade-off.
 
 This matters because the contribution of deep neuro-fuzzy models cannot be assessed solely in terms of RMSE or F1. If interpretability is treated as a property of the internal reasoning process rather than as a post hoc explanation, then reproducibility of the rule structure becomes a relevant criterion alongside predictive quality.
 

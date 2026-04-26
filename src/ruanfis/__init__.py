@@ -132,6 +132,7 @@ from .stacked import (
     StackedAnfisLayerConfig,
     StackedAnfisModel,
     StackedAnfisModelConfig,
+    build_stagewise_initialized_stacked_anfis_model,
     build_stacked_anfis_model,
 )
 from .stages import ConnectedFuzzyBlock, FuzzyStage
@@ -219,6 +220,7 @@ __all__ = [
     "build_refined_hierarchical_model",
     "build_refined_shallow_model",
     "build_stacked_anfis_model",
+    "build_stagewise_initialized_stacked_anfis_model",
     "reestimate_hierarchical_model_rule_base",
     "reestimate_shallow_model_rule_base",
     "build_stage",

@@ -1,7 +1,7 @@
 import torch
 from torch.nn import functional as F
 
-from ruanfis.blocks import TransparentFuzzyBlock
+from ruanfis.blocks import SugenoDecisionLayer, TransparentFuzzyBlock
 from ruanfis.memberships import FuzzyVariable, GaussianMembership
 from ruanfis.rules import Antecedent, RuleBase, RuleSpec
 
@@ -55,5 +55,32 @@ def test_transparent_block_matches_manual_rule_aggregation() -> None:
         atol=1e-6,
     )
     assert torch.allclose(trace.normalized_rule_weights.sum(dim=1), torch.ones(inputs.size(0)), atol=1e-6)
+    assert torch.all(outputs >= 0.0)
+    assert torch.all(outputs <= 1.0)
+
+
+def test_sugeno_layer_can_bound_hidden_outputs() -> None:
+    variables = [
+        FuzzyVariable("x0", GaussianMembership([0.0, 1.0], [0.25, 0.25], term_names=["low", "high"])),
+    ]
+    rules = RuleBase(
+        [
+            RuleSpec((Antecedent(0, 0),), name="low"),
+            RuleSpec((Antecedent(0, 1),), name="high"),
+        ]
+    )
+    layer = SugenoDecisionLayer(
+        name="hidden_sugeno",
+        variables=variables,
+        rule_base=rules,
+        output_dim=1,
+        output_activation="sigmoid",
+    )
+    with torch.no_grad():
+        layer.rule_bias.fill_(8.0)
+        layer.rule_weights.fill_(4.0)
+
+    outputs = layer(torch.tensor([[0.0], [1.0]], dtype=torch.float32))
+
     assert torch.all(outputs >= 0.0)
     assert torch.all(outputs <= 1.0)

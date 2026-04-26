@@ -147,7 +147,9 @@ def block_gate_l1_penalty(module: nn.Module) -> Tensor:
     total = _zero_for(module)
     for submodule in module.modules():
         block_gate_logits = getattr(submodule, "block_gate_logits", None)
-        if block_gate_logits is None:
-            continue
-        total = total + torch.sigmoid(block_gate_logits).sum()
+        if block_gate_logits is not None:
+            total = total + torch.sigmoid(block_gate_logits).sum()
+        final_skip_gate_logits = getattr(submodule, "final_skip_gate_logits", None)
+        if final_skip_gate_logits is not None:
+            total = total + torch.sigmoid(final_skip_gate_logits).sum()
     return total

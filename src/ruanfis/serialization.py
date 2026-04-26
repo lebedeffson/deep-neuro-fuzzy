@@ -149,6 +149,7 @@ def serialize_model_config(model: DeepFuzzyFeatureModel) -> dict[str, Any]:
             "rule_base": _serialize_rule_base(decision),
             "output_dim": decision.output_dim,
             "output_names": list(decision.output_names),
+            "output_activation": decision.output_activation,
         },
     }
 
@@ -180,6 +181,7 @@ def deserialize_model_config(config: dict[str, Any]) -> DeepFuzzyFeatureModel:
         rule_base=_deserialize_rule_base(decision_config["rule_base"]),
         output_dim=decision_config["output_dim"],
         output_names=decision_config.get("output_names"),
+        output_activation=decision_config.get("output_activation"),
     )
     return DeepFuzzyFeatureModel(
         stages=stages,

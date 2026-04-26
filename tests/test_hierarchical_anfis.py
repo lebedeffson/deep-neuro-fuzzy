@@ -97,3 +97,38 @@ def test_hierarchical_anfis_model_builds_and_trains() -> None:
 
     assert result.validation_loss is not None
     assert result.validation_loss < initial_loss
+
+
+def test_hierarchical_hidden_blocks_can_use_bounded_outputs() -> None:
+    config = HierarchicalAnfisModelConfig(
+        input_dim=2,
+        stages=(
+            HierarchicalAnfisStageConfig(
+                name="stage_1",
+                blocks=(
+                    HierarchicalAnfisBlockConfig(
+                        name="hidden",
+                        input_indices=(0, 1),
+                        variables=(_var3("x0"), _var3("x1")),
+                        output_dim=2,
+                        output_activation="sigmoid",
+                        max_rule_arity=1,
+                        max_rules=4,
+                    ),
+                ),
+            ),
+        ),
+        decision_layer=DecisionLayerConfig(
+            name="decision",
+            variables=(_var2("h0"), _var2("h1")),
+            output_dim=1,
+            max_rule_arity=1,
+            max_rules=4,
+        ),
+    )
+    model = build_hierarchical_anfis_model(config)
+
+    features = model.forward_features(torch.rand(8, 2))
+
+    assert torch.all(features >= 0.0)
+    assert torch.all(features <= 1.0)

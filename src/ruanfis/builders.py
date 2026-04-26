@@ -59,6 +59,7 @@ class DecisionLayerConfig:
     variables: tuple[FuzzyVariable, ...]
     output_dim: int
     output_names: tuple[str, ...] | None = None
+    output_activation: str | None = None
     max_rule_arity: int | None = None
     max_rules: int | None = None
     gate_init: float = 0.0
@@ -288,6 +289,7 @@ def build_decision_layer(
         rule_base=rule_base,
         output_dim=config.output_dim,
         output_names=config.output_names,
+        output_activation=config.output_activation,
     )
 
 
