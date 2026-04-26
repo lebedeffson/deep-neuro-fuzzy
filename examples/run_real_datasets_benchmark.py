@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 from sklearn.datasets import load_breast_cancer, load_diabetes, load_digits, load_linnerud, load_wine
 from sklearn.datasets import fetch_california_housing, fetch_covtype
 from sklearn.ensemble import ExtraTreesClassifier
@@ -47,6 +48,7 @@ from ruanfis import (  # noqa: E402
     build_bootstrapped_hierarchical_model,
     build_hierarchical_anfis_model,
     build_refined_hierarchical_model,
+    build_stagewise_initialized_stacked_anfis_model,
     build_stacked_anfis_model,
     aggregate_benchmark_results,
     evaluate_trained_model,
@@ -202,6 +204,8 @@ def parse_fuzzy_model_names(raw: str) -> tuple[str, ...]:
     chunks = tuple(chunk.strip() for chunk in raw.split(",") if chunk.strip())
     if not chunks:
         raise ValueError("At least one fuzzy model must be provided.")
+    if len(chunks) == 1 and chunks[0].lower() in {"none", "off"}:
+        return tuple()
     if len(chunks) == 1 and chunks[0].lower() == "all":
         return FUZZY_MODEL_NAMES
 
@@ -666,6 +670,72 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         block_agreement_target_corr=0.22,
         block_agreement_stage_limit=1,
     ),
+    "quality_large_cls_v2": DfflProfile(
+        name="quality_large_cls_v2",
+        local_concepts=2,
+        local_max_rules=10,
+        aggregate_max_rules=36,
+        decision_max_rules=18,
+        stage2_width_min=6,
+        stage2_width_max=14,
+        aggregate_block_count=3,
+        aggregate_overlap=2,
+        aggregate_global_context_dim=8,
+        aggregate_global_max_rules=20,
+        local_max_rule_arity=3,
+        local_rule_generation_mode="prototype",
+        aggregate_rule_generation_mode="prototype",
+        decision_rule_generation_mode="prototype",
+        aggregate_max_rule_arity=3,
+        decision_max_rule_arity=3,
+        decision_three_terms=False,
+        learning_rate_scale_regression=1.0,
+        learning_rate_scale_classification=1.05,
+        refinement_cycle_floor=2,
+        pretrain_refinement_rounds=2,
+        top_k_rules=None,
+        input_group_size=4,
+        input_group_strategy="target_corr",
+        input_group_correlation_weight=0.8,
+        local_prototype_term_limit=3,
+        local_prototype_scoring_mode="max",
+        local_prototype_variable_pool_size=4,
+        aggregate_prototype_term_limit=3,
+        aggregate_prototype_scoring_mode="hybrid",
+        aggregate_prototype_variable_pool_size=20,
+        decision_prototype_term_limit=3,
+        decision_prototype_scoring_mode="hybrid",
+        decision_prototype_variable_pool_size=12,
+        local_prototype_sample_size=1024,
+        aggregate_prototype_sample_size=1024,
+        decision_prototype_sample_size=1024,
+        binary_auto_pos_weight=True,
+        binary_soft_f1_weight=0.25,
+        weight_decay=1e-5,
+        gradient_clip_norm=5.0,
+        rule_sparsity_weight=3e-5,
+        rule_length_weight=1e-5,
+        decision_usage_balance_weight=3e-3,
+        block_gates_enabled=True,
+        block_gate_init_logit=4.0,
+        block_gate_l1_weight=5e-5,
+        local_consequent_mode="affine_sigmoid",
+        aggregate_consequent_mode="affine_sigmoid",
+        bridge_enabled=True,
+        bridge_top_pairs=20,
+        bridge_pair_score_alpha=0.7,
+        bridge_concepts=2,
+        bridge_concepts_max=3,
+        bridge_max_rules=10,
+        bridge_prototype_term_limit=2,
+        bridge_prototype_scoring_mode="hybrid",
+        bridge_prototype_sample_size=1024,
+        stagewise_rule_swap_ratio=0.2,
+        stagewise_rule_swap_min_keep=8,
+        block_agreement_weight=1.5e-3,
+        block_agreement_target_corr=0.22,
+        block_agreement_stage_limit=1,
+    ),
 }
 
 
@@ -677,6 +747,14 @@ def resolve_dffl_profile(
     input_dim: int | None = None,
 ) -> DfflProfile:
     if profile_name == "quality_auto":
+        # Large high-dimensional binary tasks can benefit from less bottlenecked v2 profile.
+        if (
+            task_type == "binary_classification"
+            and input_dim is not None
+            and input_dim >= 40
+            and n_samples >= 20_000
+        ):
+            return DFFL_PROFILES["quality_large_cls_v2"]
         # Large binary datasets need slightly larger rule budgets than compact large-cls.
         if task_type == "binary_classification" and n_samples >= 8_000:
             return DFFL_PROFILES["quality_large_cls_plus"]
@@ -2269,17 +2347,33 @@ def build_stacked_config(
     width_scale: float = 1.0,
     rule_scale: float = 1.0,
     prototype_scoring_mode: str = "max",
+    hidden_output_activation: str | None = None,
+    final_skip_input_count: int = 0,
+    final_skip_input_indices: tuple[int, ...] | None = None,
+    final_skip_gates_enabled: bool = False,
+    final_skip_gate_init_logit: float = 2.0,
 ) -> StackedAnfisModelConfig:
     hidden_1 = _scaled_int(_concept_width(input_dim), width_scale, minimum=2)
     hidden_2 = _scaled_int(_hidden_width(input_dim), width_scale, minimum=2)
+    if final_skip_input_indices is None:
+        skip_indices = tuple(range(min(max(0, int(final_skip_input_count)), input_dim)))
+    else:
+        skip_indices = tuple(int(index) for index in final_skip_input_indices if 0 <= int(index) < input_dim)
+    final_variables = tuple(var3(f"h2_{i}") for i in range(hidden_2)) + tuple(
+        var3(f"x{index}") for index in skip_indices
+    )
     return StackedAnfisModelConfig(
         input_dim=input_dim,
+        final_skip_input_indices=skip_indices,
+        final_skip_gates_enabled=final_skip_gates_enabled,
+        final_skip_gate_init_logit=final_skip_gate_init_logit,
         layers=(
             StackedAnfisLayerConfig(
                 name="stacked_layer_1",
                 variables=tuple(var3(f"x{i}") for i in range(input_dim)),
                 output_dim=hidden_1,
                 output_names=tuple(f"h1_{i}" for i in range(hidden_1)),
+                output_activation=hidden_output_activation,
                 max_rule_arity=2,
                 max_rules=_scaled_int(24, rule_scale, minimum=4),
                 rule_generation_mode="prototype",
@@ -2290,6 +2384,7 @@ def build_stacked_config(
                 variables=tuple(var3(f"h1_{i}") for i in range(hidden_1)),
                 output_dim=hidden_2,
                 output_names=tuple(f"h2_{i}" for i in range(hidden_2)),
+                output_activation=hidden_output_activation,
                 max_rule_arity=2,
                 max_rules=_scaled_int(16, rule_scale, minimum=4),
                 rule_generation_mode="prototype",
@@ -2297,7 +2392,7 @@ def build_stacked_config(
             ),
             StackedAnfisLayerConfig(
                 name="stacked_layer_3",
-                variables=tuple(var3(f"h2_{i}") for i in range(hidden_2)),
+                variables=final_variables,
                 output_dim=1,
                 output_names=("target",),
                 max_rule_arity=2,
@@ -2309,6 +2404,52 @@ def build_stacked_config(
     )
 
 
+def _resolve_stacked_final_skip_indices(
+    *,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    count: int,
+    mode: str,
+) -> tuple[int, ...]:
+    input_dim = int(train_inputs.shape[1])
+    requested = min(max(0, int(count)), input_dim)
+    if requested <= 0:
+        return ()
+
+    normalized_mode = str(mode).strip().lower()
+    if normalized_mode == "first":
+        return tuple(range(requested))
+    if normalized_mode not in {"target_corr", "target_corr_diverse"}:
+        raise ValueError(
+            f"Unsupported stacked_final_skip_mode={mode!r}. Expected 'first', 'target_corr', or 'target_corr_diverse'."
+        )
+
+    relevance = _feature_target_relevance(train_inputs, train_targets)
+    if normalized_mode == "target_corr":
+        ranked = np.argsort(-relevance, kind="stable")
+        return tuple(int(index) for index in ranked[:requested])
+
+    stability = _feature_relevance_stability_proxy(train_inputs, train_targets)
+    pairwise_corr = _feature_feature_correlation(train_inputs)
+    base_score = 0.75 * relevance + 0.25 * stability
+    remaining = set(range(input_dim))
+    selected: list[int] = []
+    while remaining and len(selected) < requested:
+        best_index = None
+        best_score = float("-inf")
+        for candidate in sorted(remaining):
+            redundancy = 0.0 if not selected else max(float(pairwise_corr[candidate, prev]) for prev in selected)
+            score = float(base_score[candidate]) - 0.35 * redundancy
+            if score > best_score:
+                best_score = score
+                best_index = candidate
+        if best_index is None:
+            break
+        selected.append(int(best_index))
+        remaining.remove(best_index)
+    return tuple(selected)
+
+
 def build_hierarchical_anfis_config(
     input_dim: int,
     *,
@@ -2316,6 +2457,7 @@ def build_hierarchical_anfis_config(
     width_scale: float = 1.0,
     rule_scale: float = 1.0,
     prototype_scoring_mode: str = "max",
+    hidden_output_activation: str | None = None,
 ) -> HierarchicalAnfisModelConfig:
     groups = _make_groups(input_dim, group_size=max(1, int(group_size)))
     local_width = _scaled_int(2, width_scale, minimum=1)
@@ -2328,6 +2470,7 @@ def build_hierarchical_anfis_config(
                 variables=tuple(var3(f"x{idx}") for idx in indices),
                 output_dim=local_width,
                 output_names=tuple(f"s1_{block_index}_{i}" for i in range(local_width)),
+                output_activation=hidden_output_activation,
                 max_rule_arity=min(2, len(indices)),
                 max_rules=_scaled_int(8, rule_scale, minimum=2),
                 rule_generation_mode="prototype",
@@ -2354,6 +2497,7 @@ def build_hierarchical_anfis_config(
                         variables=tuple(var3(f"s1_{i}") for i in range(stage_1_width)),
                         output_dim=stage_2_width,
                         output_names=tuple(f"s2_{i}" for i in range(stage_2_width)),
+                        output_activation=hidden_output_activation,
                         max_rule_arity=2,
                         max_rules=_scaled_int(16, rule_scale, minimum=4),
                         rule_generation_mode="prototype",
@@ -3116,6 +3260,191 @@ def _build_binary_distillation_targets(
     return blended_targets.to(dtype=train_targets.dtype), metadata
 
 
+def _compute_sample_hardness_scores(
+    *,
+    task_type: TaskType,
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+) -> torch.Tensor:
+    aligned_targets = targets.to(device=predictions.device, dtype=predictions.dtype)
+    if predictions.ndim == 2 and predictions.size(-1) == 1 and aligned_targets.ndim == 1:
+        aligned_targets = aligned_targets.unsqueeze(-1)
+    if task_type == "binary_classification":
+        if aligned_targets.ndim == 1:
+            aligned_targets = aligned_targets.unsqueeze(-1)
+        per_output = F.binary_cross_entropy_with_logits(
+            predictions,
+            aligned_targets,
+            reduction="none",
+        )
+        return per_output.reshape(predictions.size(0), -1).mean(dim=1)
+    if task_type == "regression":
+        if aligned_targets.ndim == 1:
+            aligned_targets = aligned_targets.unsqueeze(-1)
+        return torch.abs(predictions - aligned_targets).reshape(predictions.size(0), -1).mean(dim=1)
+    raise ValueError(f"Unsupported task_type={task_type!r}.")
+
+
+def _select_hard_sample_indices(
+    *,
+    hardness_scores: torch.Tensor,
+    fraction: float,
+) -> torch.Tensor:
+    if hardness_scores.ndim != 1:
+        raise ValueError("hardness_scores must be a 1D tensor.")
+    if hardness_scores.numel() == 0:
+        return torch.empty(0, dtype=torch.long, device=hardness_scores.device)
+    fraction = float(fraction)
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("fuzzy_hard_sample_fraction must be in (0, 1].")
+    hard_count = max(1, int(round(float(hardness_scores.numel()) * fraction)))
+    hard_count = min(hard_count, int(hardness_scores.numel()))
+    return torch.topk(hardness_scores, k=hard_count, largest=True, sorted=False).indices
+
+
+def _augment_with_hard_samples(
+    *,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    hard_indices: torch.Tensor,
+    multiplier: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    repeat_factor = int(multiplier) - 1
+    if repeat_factor <= 0 or hard_indices.numel() == 0:
+        return inputs, targets
+
+    hard_inputs = inputs.index_select(0, hard_indices)
+    hard_targets = targets.index_select(0, hard_indices)
+    if hard_inputs.ndim == 2:
+        hard_inputs = hard_inputs.repeat((repeat_factor, 1))
+    else:
+        hard_inputs = hard_inputs.repeat(repeat_factor)
+    if hard_targets.ndim == 2:
+        hard_targets = hard_targets.repeat((repeat_factor, 1))
+    else:
+        hard_targets = hard_targets.repeat(repeat_factor)
+    return torch.cat((inputs, hard_inputs), dim=0), torch.cat((targets, hard_targets), dim=0)
+
+
+def _compute_baseline_hard_indices(
+    *,
+    task_type: TaskType,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    fraction: float,
+    seed: int,
+    teacher_trees: int,
+) -> torch.Tensor | None:
+    if teacher_trees <= 0:
+        raise ValueError("fuzzy_hard_sample_teacher_trees must be positive.")
+    if task_type != "binary_classification":
+        return None
+
+    x_train = train_inputs.detach().cpu().numpy().astype(np.float32, copy=False)
+    y_train = train_targets.detach().reshape(-1).cpu().numpy().astype(np.float64, copy=False)
+    y_train_bin = (y_train >= 0.5).astype(np.int64, copy=False)
+    if np.unique(y_train_bin).size < 2:
+        return None
+
+    teacher = ExtraTreesClassifier(
+        n_estimators=int(teacher_trees),
+        random_state=int(seed),
+        n_jobs=-1,
+        class_weight="balanced_subsample",
+    )
+    teacher.fit(x_train, y_train_bin)
+    p_train = teacher.predict_proba(x_train)[:, 1].astype(np.float32, copy=False)
+    p_train = np.clip(p_train, 1e-6, 1.0 - 1e-6)
+    logits = torch.from_numpy(np.log(p_train / (1.0 - p_train))).reshape_as(train_targets)
+    scores = _compute_sample_hardness_scores(
+        task_type=task_type,
+        predictions=logits,
+        targets=train_targets,
+    )
+    return _select_hard_sample_indices(hardness_scores=scores, fraction=fraction)
+
+
+def _maybe_run_hard_sample_finetune(
+    *,
+    enabled: bool,
+    model_name: str,
+    model: torch.nn.Module,
+    task_type: TaskType,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    validation_inputs: torch.Tensor,
+    validation_targets: torch.Tensor,
+    base_training_config: TrainingConfig,
+    source: str,
+    hard_fraction: float,
+    hard_multiplier: int,
+    finetune_epochs: int,
+    finetune_patience: int,
+    baseline_hard_indices: torch.Tensor | None,
+    seed: int,
+) -> None:
+    if not enabled:
+        return
+    if hard_multiplier <= 1:
+        return
+    if finetune_epochs <= 0:
+        return
+
+    normalized_source = str(source).strip().lower()
+    if normalized_source not in {"self", "baseline"}:
+        raise ValueError("fuzzy_hard_sample_source must be either 'self' or 'baseline'.")
+
+    hard_indices: torch.Tensor | None = None
+    if normalized_source == "baseline" and baseline_hard_indices is not None:
+        hard_indices = baseline_hard_indices.to(device=train_inputs.device, dtype=torch.long)
+    else:
+        model_device = next(model.parameters()).device
+        score_inputs = train_inputs.to(device=model_device, dtype=torch.float32)
+        score_targets = train_targets.to(device=model_device, dtype=torch.float32)
+        model.eval()
+        with torch.no_grad():
+            predictions = predict_with_optional_residual_head(model, score_inputs, top_k_rules=None)
+        scores = _compute_sample_hardness_scores(
+            task_type=task_type,
+            predictions=predictions,
+            targets=score_targets,
+        )
+        hard_indices = _select_hard_sample_indices(
+            hardness_scores=scores,
+            fraction=hard_fraction,
+        ).to(device=train_inputs.device, dtype=torch.long)
+
+    if hard_indices is None or hard_indices.numel() == 0:
+        return
+
+    augmented_inputs, augmented_targets = _augment_with_hard_samples(
+        inputs=train_inputs,
+        targets=train_targets,
+        hard_indices=hard_indices,
+        multiplier=hard_multiplier,
+    )
+    finetune_config = replace(
+        base_training_config,
+        max_epochs=max(1, int(finetune_epochs)),
+        patience=min(max(1, int(finetune_patience)), max(1, int(finetune_epochs))),
+    )
+    progress_log(
+        (
+            "seed={seed} model={model}: hard_finetune source={source} hard={hard} "
+            "train_before={before} train_after={after}"
+        ).format(
+            seed=seed,
+            model=model_name,
+            source=normalized_source,
+            hard=int(hard_indices.numel()),
+            before=int(train_inputs.size(0)),
+            after=int(augmented_inputs.size(0)),
+        )
+    )
+    trainer = FuzzyTrainer(model, finetune_config)
+    trainer.fit(augmented_inputs, augmented_targets, validation_inputs, validation_targets)
+
+
 def run_single_seed_dataset_benchmark(
     spec: DatasetSpec,
     *,
@@ -3145,11 +3474,19 @@ def run_single_seed_dataset_benchmark(
     dffl_tiny_restarts: int,
     stacked_width_scale: float,
     stacked_rule_scale: float,
+    stacked_stagewise_init: bool,
+    stacked_stagewise_init_epochs: int,
+    stacked_final_skip_input_count: int,
+    stacked_final_skip_mode: str,
+    stacked_final_skip_gates_enabled: bool,
+    stacked_final_skip_gate_init_logit: float,
+    stacked_final_skip_gate_l1_weight: float,
     hierarchical_width_scale: float,
     hierarchical_rule_scale: float,
     hierarchical_group_size: int,
     stacked_prototype_scoring_mode: str,
     hierarchical_prototype_scoring_mode: str,
+    hidden_output_activation: str | None,
     fuzzy_binary_loss_name: str,
     fuzzy_binary_focal_gamma: float,
     fuzzy_binary_auto_pos_weight: bool,
@@ -3159,6 +3496,14 @@ def run_single_seed_dataset_benchmark(
     fuzzy_distill_weight: float,
     fuzzy_distill_models: tuple[str, ...],
     fuzzy_distill_teacher_trees: int,
+    fuzzy_hard_sample_training: bool,
+    fuzzy_hard_sample_models: tuple[str, ...],
+    fuzzy_hard_sample_source: str,
+    fuzzy_hard_sample_fraction: float,
+    fuzzy_hard_sample_multiplier: int,
+    fuzzy_hard_sample_finetune_epochs: int,
+    fuzzy_hard_sample_finetune_patience: int,
+    fuzzy_hard_sample_teacher_trees: int,
     batch_size: int,
     patience: int,
     classification_threshold: float,
@@ -3239,231 +3584,25 @@ def run_single_seed_dataset_benchmark(
                 )
             )
 
-    analysis_train_inputs, analysis_train_targets, analysis_device = _prepare_structure_analysis_tensors(
-        inputs=train_inputs,
-        targets=train_targets,
-        device=device,
-    )
-    analysis_validation_inputs, analysis_validation_targets, _ = _prepare_structure_analysis_tensors(
-        inputs=validation_inputs,
-        targets=validation_targets,
-        device=device,
-    )
-
-    dffl_profile = resolve_dffl_profile(
-        profile_name=dffl_profile_name,
-        task_type=spec.task_type,
-        n_samples=split.n_samples,
-        input_dim=split.input_dim,
-    )
-    dffl_profile, dataset_profile_policy = _resolve_dataset_profile_override(
-        dffl_profile,
-        dataset_name=spec.name,
-        dataset_overrides=dffl_dataset_overrides,
-    )
-    dffl_profile = apply_dffl_profile_overrides(
-        dffl_profile,
-        rule_swap_ratio=dffl_rule_swap_ratio,
-        rule_swap_min_keep=dffl_rule_swap_min_keep,
-        total_rule_budget=dffl_total_rule_budget,
-        bridge_score_interaction_weight=dffl_bridge_score_interaction_weight,
-        bridge_score_stability_weight=dffl_bridge_score_stability_weight,
-    )
-    if _dataset_override_skip_builtin_budget_policy(
-        dataset_name=spec.name,
-        dataset_overrides=dffl_dataset_overrides,
-    ):
-        dffl_dataset_budget_policy = "skipped_by_dataset_override"
-    else:
-        dffl_profile, dffl_dataset_budget_policy = apply_dataset_budget_reallocation(
-            dffl_profile,
-            dataset_name=spec.name,
+    hard_sample_enabled_models = set(fuzzy_hard_sample_models)
+    baseline_hard_indices: torch.Tensor | None = None
+    if fuzzy_hard_sample_training and fuzzy_hard_sample_source.strip().lower() == "baseline":
+        baseline_hard_indices = _compute_baseline_hard_indices(
             task_type=spec.task_type,
-            input_dim=split.input_dim,
-            total_budget_locked=(dffl_total_rule_budget is not None),
-        )
-    dffl_profile, dataset_field_policy = _apply_dataset_profile_field_overrides(
-        dffl_profile,
-        dataset_name=spec.name,
-        dataset_overrides=dffl_dataset_overrides,
-        total_budget_locked=(dffl_total_rule_budget is not None),
-    )
-    dffl_fast_gpu_policy = "none"
-    if dffl_fast_gpu:
-        dffl_profile, dffl_fast_gpu_policy = apply_dffl_fast_gpu_profile(
-            dffl_profile,
-            task_type=spec.task_type,
-            input_dim=split.input_dim,
-            n_samples=split.n_samples,
-            total_budget_locked=(dffl_total_rule_budget is not None),
-        )
-    policy_parts = [
-        part
-        for part in (dffl_dataset_budget_policy, dataset_profile_policy, dataset_field_policy, dffl_fast_gpu_policy)
-        if part != "none"
-    ]
-    dffl_dataset_budget_policy = "+".join(policy_parts) if policy_parts else "none"
-    feature_geometry_effective, feature_geometry_policy = _resolve_effective_feature_geometry(
-        requested_geometry=feature_geometry_requested,
-        profile=dffl_profile,
-        train_inputs=analysis_train_inputs,
-        train_targets=analysis_train_targets,
-    )
-    dffl_input_groups = make_dffl_input_groups(
-        dffl_profile,
-        train_inputs=analysis_train_inputs,
-        train_targets=analysis_train_targets,
-        feature_geometry=feature_geometry_effective,
-        binary_heavy_grouping_mode=binary_heavy_grouping_mode,
-    )
-    dffl_bridge_pairs = make_dffl_bridge_pairs(
-        dffl_profile,
-        train_inputs=analysis_train_inputs,
-        train_targets=analysis_train_targets,
-        validation_inputs=analysis_validation_inputs,
-        validation_targets=analysis_validation_targets,
-        input_groups=dffl_input_groups,
-        feature_geometry=feature_geometry_effective,
-        adaptive_budget_enabled=dffl_adaptive_budget,
-    )
-    dffl_residual_features = make_dffl_residual_features(
-        dffl_profile,
-        train_inputs=analysis_train_inputs,
-        train_targets=analysis_train_targets,
-        input_groups=dffl_input_groups,
-        validation_inputs=analysis_validation_inputs,
-        validation_targets=analysis_validation_targets,
-    )
-    dffl_intergroup_share = estimate_intergroup_interaction_share(
-        train_inputs=analysis_train_inputs,
-        train_targets=analysis_train_targets,
-        input_groups=dffl_input_groups,
-    )
-    dffl_component_marginal_gains = _estimate_dffl_component_marginal_gains(
-        task_type=spec.task_type,
-        train_inputs=analysis_train_inputs,
-        train_targets=analysis_train_targets,
-        validation_inputs=analysis_validation_inputs,
-        validation_targets=analysis_validation_targets,
-        input_groups=dffl_input_groups,
-        bridge_pairs=dffl_bridge_pairs,
-    )
-    dffl_adaptive_local_arity_effective, dffl_adaptive_local_arity_policy = _resolve_adaptive_local_arity_policy(
-        enabled=dffl_adaptive_local_arity,
-        task_type=spec.task_type,
-        n_samples=split.n_samples,
-        input_dim=split.input_dim,
-    )
-    dffl_high_arity_groups = (
-        _select_adaptive_high_arity_groups(
-            train_inputs=analysis_train_inputs,
-            train_targets=analysis_train_targets,
-            input_groups=dffl_input_groups,
-            input_dim=split.input_dim,
-        )
-        if dffl_adaptive_local_arity_effective
-        else ()
-    )
-    dffl_bridge_concepts_effective = _resolve_effective_bridge_concepts(
-        profile=dffl_profile,
-        intergroup_interaction_share=dffl_intergroup_share,
-        input_dim=split.input_dim,
-        n_bridge_pairs=len(dffl_bridge_pairs),
-    )
-    dffl_budget_snapshot = _resolve_dffl_effective_rule_budgets(
-        profile=dffl_profile,
-        input_dim=split.input_dim,
-        n_local_groups=len(dffl_input_groups),
-        n_bridge_pairs=len(dffl_bridge_pairs),
-        intergroup_interaction_share=dffl_intergroup_share,
-        adaptive_budget_enabled=dffl_adaptive_budget,
-        component_marginal_gains=dffl_component_marginal_gains,
-    )
-    dffl_adaptive_rule_swap_effective = bool(dffl_adaptive_rule_swap)
-    dffl_adaptive_rule_swap_policy = "enabled"
-    if dffl_rule_swap_ratio is None and spec.name == "breast_cancer":
-        # Breast policy relies on fixed swap ratio from dataset profile tuning.
-        dffl_adaptive_rule_swap_effective = False
-        dffl_adaptive_rule_swap_policy = "disabled_for_breast_policy"
-    dffl_rule_swap_ratio_effective = float(dffl_profile.stagewise_rule_swap_ratio)
-    dffl_rule_swap_reason = "profile_default"
-    if dffl_rule_swap_ratio is not None:
-        dffl_rule_swap_reason = "cli_override"
-    elif dffl_adaptive_rule_swap_effective:
-        dffl_rule_swap_ratio_effective, dffl_rule_swap_reason = resolve_adaptive_rule_swap_ratio(
-            base_ratio=dffl_rule_swap_ratio_effective,
-            input_dim=split.input_dim,
-            intergroup_interaction_share=dffl_intergroup_share,
-        )
-    dffl_rule_swap_min_keep_effective = (
-        int(dffl_profile.stagewise_rule_swap_min_keep) if dffl_rule_swap_ratio_effective > 0.0 else 0
-    )
-    dffl_shuffle_effective, dffl_shuffle_policy = resolve_dffl_shuffle_policy(
-        task_type=spec.task_type,
-        input_dim=split.input_dim,
-        n_samples=split.n_samples,
-        intergroup_interaction_share=dffl_intergroup_share,
-    )
-    dffl_binary_feature_indices = _detect_binary_feature_indices(analysis_train_inputs)
-    progress_log(
-        (
-            "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, "
-            "analysis_device={analysis_device}, "
-            "feature_geometry={feature_geometry}, feature_geometry_policy={feature_geometry_policy}, binary_heavy_grouping={binary_mode}, "
-            "groups={groups}, bridges={bridges}, intergroup_share={share:.3f}, "
-            "residual_features={residuals}, "
-            "dataset_budget_policy={dataset_budget_policy}, bridge_val_gain_w={bridge_val_gain_w:.3f}, "
-            "adaptive_local_arity={adaptive_local_arity}, adaptive_local_arity_policy={adaptive_local_arity_policy}, high_arity_groups={high_arity_groups}, "
-            "marginal_gain(local={mg_local:.2f}, bridge={mg_bridge:.2f}, aggregate={mg_aggregate:.2f}, decision={mg_decision:.2f}), "
-            "bridge_concepts_effective={bridge_concepts}, "
-            "rule_swap={swap:.3f}, swap_keep={keep}, swap_policy={policy}, "
-            "adaptive_rule_swap={adaptive_rule_swap}, adaptive_rule_swap_policy={adaptive_rule_swap_policy}, "
-            "budget_total={budget_total}, budget_policy={budget_policy}, adaptive_budget={adaptive_budget}, "
-            "shuffle={shuffle}, shuffle_policy={shuffle_policy}"
-        ).format(
+            train_inputs=train_inputs,
+            train_targets=train_targets,
+            fraction=fuzzy_hard_sample_fraction,
             seed=seed,
-            name=dffl_profile.name,
-            task=spec.task_type,
-            device=device or "default",
-            analysis_device=analysis_device,
-            grouping=dffl_profile.input_group_strategy,
-            feature_geometry=feature_geometry_effective,
-            feature_geometry_policy=feature_geometry_policy,
-            binary_mode=binary_heavy_grouping_mode,
-            groups=len(dffl_input_groups),
-            bridges=len(dffl_bridge_pairs),
-            share=dffl_intergroup_share,
-            residuals=len(dffl_residual_features),
-            dataset_budget_policy=dffl_dataset_budget_policy,
-            bridge_val_gain_w=float(dffl_profile.bridge_validation_gain_weight),
-            adaptive_local_arity=dffl_adaptive_local_arity_effective,
-            adaptive_local_arity_policy=dffl_adaptive_local_arity_policy,
-            high_arity_groups=len(dffl_high_arity_groups),
-            mg_local=float(dffl_component_marginal_gains.get("local", 1.0)),
-            mg_bridge=float(dffl_component_marginal_gains.get("bridge", 1.0)),
-            mg_aggregate=float(dffl_component_marginal_gains.get("aggregate", 1.0)),
-            mg_decision=float(dffl_component_marginal_gains.get("decision", 1.0)),
-            bridge_concepts=int(dffl_bridge_concepts_effective),
-            swap=dffl_rule_swap_ratio_effective,
-            keep=dffl_rule_swap_min_keep_effective,
-            policy=dffl_rule_swap_reason,
-            adaptive_rule_swap=dffl_adaptive_rule_swap_effective,
-            adaptive_rule_swap_policy=dffl_adaptive_rule_swap_policy,
-            budget_total=int(dffl_budget_snapshot["total_rule_budget_effective"]),
-            budget_policy=str(dffl_budget_snapshot["allocation_policy"]),
-            adaptive_budget=dffl_adaptive_budget,
-            shuffle=dffl_shuffle_effective,
-            shuffle_policy=dffl_shuffle_policy,
+            teacher_trees=fuzzy_hard_sample_teacher_trees,
         )
-    )
+        if baseline_hard_indices is not None:
+            progress_log(
+                "seed={seed} hard_source=baseline hard_count={hard}".format(
+                    seed=seed,
+                    hard=int(baseline_hard_indices.numel()),
+                )
+            )
 
-    dffl_learning_rate_effective = (
-        dffl_learning_rate * dffl_profile.learning_rate_scale_classification
-        if spec.task_type == "binary_classification"
-        else dffl_learning_rate * dffl_profile.learning_rate_scale_regression
-    )
-    regression_residual_head_enabled = bool(spec.task_type == "regression" and split.n_samples > 100)
-    dffl_refinement_cycles = max(refinement_cycles, dffl_profile.refinement_cycle_floor)
     dataset_override_entry = _get_dataset_override_entry(
         dataset_overrides=dffl_dataset_overrides,
         dataset_name=spec.name,
@@ -3480,12 +3619,241 @@ def run_single_seed_dataset_benchmark(
         if spec.task_type == "binary_classification"
         else {}
     )
+    regression_residual_head_enabled = bool(spec.task_type == "regression" and split.n_samples > 100)
 
     trained_fuzzy_models: dict[str, torch.nn.Module] = {}
     model_top_k_rules: dict[str, int | None] = {}
     model_prediction_postprocessors: dict[str, Callable[[torch.Tensor], torch.Tensor] | None] = {}
 
     if "ruanfis_refined_deep" in fuzzy_models:
+        analysis_train_inputs, analysis_train_targets, analysis_device = _prepare_structure_analysis_tensors(
+            inputs=train_inputs,
+            targets=train_targets,
+            device=device,
+        )
+        analysis_validation_inputs, analysis_validation_targets, _ = _prepare_structure_analysis_tensors(
+            inputs=validation_inputs,
+            targets=validation_targets,
+            device=device,
+        )
+        dffl_profile = resolve_dffl_profile(
+            profile_name=dffl_profile_name,
+            task_type=spec.task_type,
+            n_samples=split.n_samples,
+            input_dim=split.input_dim,
+        )
+        dffl_profile, dataset_profile_policy = _resolve_dataset_profile_override(
+            dffl_profile,
+            dataset_name=spec.name,
+            dataset_overrides=dffl_dataset_overrides,
+        )
+        dffl_profile = apply_dffl_profile_overrides(
+            dffl_profile,
+            rule_swap_ratio=dffl_rule_swap_ratio,
+            rule_swap_min_keep=dffl_rule_swap_min_keep,
+            total_rule_budget=dffl_total_rule_budget,
+            bridge_score_interaction_weight=dffl_bridge_score_interaction_weight,
+            bridge_score_stability_weight=dffl_bridge_score_stability_weight,
+        )
+        if _dataset_override_skip_builtin_budget_policy(
+            dataset_name=spec.name,
+            dataset_overrides=dffl_dataset_overrides,
+        ):
+            dffl_dataset_budget_policy = "skipped_by_dataset_override"
+        else:
+            dffl_profile, dffl_dataset_budget_policy = apply_dataset_budget_reallocation(
+                dffl_profile,
+                dataset_name=spec.name,
+                task_type=spec.task_type,
+                input_dim=split.input_dim,
+                total_budget_locked=(dffl_total_rule_budget is not None),
+            )
+        dffl_profile, dataset_field_policy = _apply_dataset_profile_field_overrides(
+            dffl_profile,
+            dataset_name=spec.name,
+            dataset_overrides=dffl_dataset_overrides,
+            total_budget_locked=(dffl_total_rule_budget is not None),
+        )
+        dffl_fast_gpu_policy = "none"
+        if dffl_fast_gpu:
+            dffl_profile, dffl_fast_gpu_policy = apply_dffl_fast_gpu_profile(
+                dffl_profile,
+                task_type=spec.task_type,
+                input_dim=split.input_dim,
+                n_samples=split.n_samples,
+                total_budget_locked=(dffl_total_rule_budget is not None),
+            )
+        policy_parts = [
+            part
+            for part in (
+                dffl_dataset_budget_policy,
+                dataset_profile_policy,
+                dataset_field_policy,
+                dffl_fast_gpu_policy,
+            )
+            if part != "none"
+        ]
+        dffl_dataset_budget_policy = "+".join(policy_parts) if policy_parts else "none"
+        feature_geometry_effective, feature_geometry_policy = _resolve_effective_feature_geometry(
+            requested_geometry=feature_geometry_requested,
+            profile=dffl_profile,
+            train_inputs=analysis_train_inputs,
+            train_targets=analysis_train_targets,
+        )
+        dffl_input_groups = make_dffl_input_groups(
+            dffl_profile,
+            train_inputs=analysis_train_inputs,
+            train_targets=analysis_train_targets,
+            feature_geometry=feature_geometry_effective,
+            binary_heavy_grouping_mode=binary_heavy_grouping_mode,
+        )
+        dffl_bridge_pairs = make_dffl_bridge_pairs(
+            dffl_profile,
+            train_inputs=analysis_train_inputs,
+            train_targets=analysis_train_targets,
+            validation_inputs=analysis_validation_inputs,
+            validation_targets=analysis_validation_targets,
+            input_groups=dffl_input_groups,
+            feature_geometry=feature_geometry_effective,
+            adaptive_budget_enabled=dffl_adaptive_budget,
+        )
+        dffl_residual_features = make_dffl_residual_features(
+            dffl_profile,
+            train_inputs=analysis_train_inputs,
+            train_targets=analysis_train_targets,
+            input_groups=dffl_input_groups,
+            validation_inputs=analysis_validation_inputs,
+            validation_targets=analysis_validation_targets,
+        )
+        dffl_intergroup_share = estimate_intergroup_interaction_share(
+            train_inputs=analysis_train_inputs,
+            train_targets=analysis_train_targets,
+            input_groups=dffl_input_groups,
+        )
+        dffl_component_marginal_gains = _estimate_dffl_component_marginal_gains(
+            task_type=spec.task_type,
+            train_inputs=analysis_train_inputs,
+            train_targets=analysis_train_targets,
+            validation_inputs=analysis_validation_inputs,
+            validation_targets=analysis_validation_targets,
+            input_groups=dffl_input_groups,
+            bridge_pairs=dffl_bridge_pairs,
+        )
+        dffl_adaptive_local_arity_effective, dffl_adaptive_local_arity_policy = (
+            _resolve_adaptive_local_arity_policy(
+                enabled=dffl_adaptive_local_arity,
+                task_type=spec.task_type,
+                n_samples=split.n_samples,
+                input_dim=split.input_dim,
+            )
+        )
+        dffl_high_arity_groups = (
+            _select_adaptive_high_arity_groups(
+                train_inputs=analysis_train_inputs,
+                train_targets=analysis_train_targets,
+                input_groups=dffl_input_groups,
+                input_dim=split.input_dim,
+            )
+            if dffl_adaptive_local_arity_effective
+            else ()
+        )
+        dffl_bridge_concepts_effective = _resolve_effective_bridge_concepts(
+            profile=dffl_profile,
+            intergroup_interaction_share=dffl_intergroup_share,
+            input_dim=split.input_dim,
+            n_bridge_pairs=len(dffl_bridge_pairs),
+        )
+        dffl_budget_snapshot = _resolve_dffl_effective_rule_budgets(
+            profile=dffl_profile,
+            input_dim=split.input_dim,
+            n_local_groups=len(dffl_input_groups),
+            n_bridge_pairs=len(dffl_bridge_pairs),
+            intergroup_interaction_share=dffl_intergroup_share,
+            adaptive_budget_enabled=dffl_adaptive_budget,
+            component_marginal_gains=dffl_component_marginal_gains,
+        )
+        dffl_adaptive_rule_swap_effective = bool(dffl_adaptive_rule_swap)
+        dffl_adaptive_rule_swap_policy = "enabled"
+        if dffl_rule_swap_ratio is None and spec.name == "breast_cancer":
+            dffl_adaptive_rule_swap_effective = False
+            dffl_adaptive_rule_swap_policy = "disabled_for_breast_policy"
+        dffl_rule_swap_ratio_effective = float(dffl_profile.stagewise_rule_swap_ratio)
+        dffl_rule_swap_reason = "profile_default"
+        if dffl_rule_swap_ratio is not None:
+            dffl_rule_swap_reason = "cli_override"
+        elif dffl_adaptive_rule_swap_effective:
+            dffl_rule_swap_ratio_effective, dffl_rule_swap_reason = resolve_adaptive_rule_swap_ratio(
+                base_ratio=dffl_rule_swap_ratio_effective,
+                input_dim=split.input_dim,
+                intergroup_interaction_share=dffl_intergroup_share,
+            )
+        dffl_rule_swap_min_keep_effective = (
+            int(dffl_profile.stagewise_rule_swap_min_keep) if dffl_rule_swap_ratio_effective > 0.0 else 0
+        )
+        dffl_shuffle_effective, dffl_shuffle_policy = resolve_dffl_shuffle_policy(
+            task_type=spec.task_type,
+            input_dim=split.input_dim,
+            n_samples=split.n_samples,
+            intergroup_interaction_share=dffl_intergroup_share,
+        )
+        dffl_binary_feature_indices = _detect_binary_feature_indices(analysis_train_inputs)
+        progress_log(
+            (
+                "seed={seed} profile: dffl={name}, task={task}, device={device}, grouping={grouping}, "
+                "analysis_device={analysis_device}, "
+                "feature_geometry={feature_geometry}, feature_geometry_policy={feature_geometry_policy}, binary_heavy_grouping={binary_mode}, "
+                "groups={groups}, bridges={bridges}, intergroup_share={share:.3f}, "
+                "residual_features={residuals}, "
+                "dataset_budget_policy={dataset_budget_policy}, bridge_val_gain_w={bridge_val_gain_w:.3f}, "
+                "adaptive_local_arity={adaptive_local_arity}, adaptive_local_arity_policy={adaptive_local_arity_policy}, high_arity_groups={high_arity_groups}, "
+                "marginal_gain(local={mg_local:.2f}, bridge={mg_bridge:.2f}, aggregate={mg_aggregate:.2f}, decision={mg_decision:.2f}), "
+                "bridge_concepts_effective={bridge_concepts}, "
+                "rule_swap={swap:.3f}, swap_keep={keep}, swap_policy={policy}, "
+                "adaptive_rule_swap={adaptive_rule_swap}, adaptive_rule_swap_policy={adaptive_rule_swap_policy}, "
+                "budget_total={budget_total}, budget_policy={budget_policy}, adaptive_budget={adaptive_budget}, "
+                "shuffle={shuffle}, shuffle_policy={shuffle_policy}"
+            ).format(
+                seed=seed,
+                name=dffl_profile.name,
+                task=spec.task_type,
+                device=device or "default",
+                analysis_device=analysis_device,
+                grouping=dffl_profile.input_group_strategy,
+                feature_geometry=feature_geometry_effective,
+                feature_geometry_policy=feature_geometry_policy,
+                binary_mode=binary_heavy_grouping_mode,
+                groups=len(dffl_input_groups),
+                bridges=len(dffl_bridge_pairs),
+                share=dffl_intergroup_share,
+                residuals=len(dffl_residual_features),
+                dataset_budget_policy=dffl_dataset_budget_policy,
+                bridge_val_gain_w=float(dffl_profile.bridge_validation_gain_weight),
+                adaptive_local_arity=dffl_adaptive_local_arity_effective,
+                adaptive_local_arity_policy=dffl_adaptive_local_arity_policy,
+                high_arity_groups=len(dffl_high_arity_groups),
+                mg_local=float(dffl_component_marginal_gains.get("local", 1.0)),
+                mg_bridge=float(dffl_component_marginal_gains.get("bridge", 1.0)),
+                mg_aggregate=float(dffl_component_marginal_gains.get("aggregate", 1.0)),
+                mg_decision=float(dffl_component_marginal_gains.get("decision", 1.0)),
+                bridge_concepts=int(dffl_bridge_concepts_effective),
+                swap=dffl_rule_swap_ratio_effective,
+                keep=dffl_rule_swap_min_keep_effective,
+                policy=dffl_rule_swap_reason,
+                adaptive_rule_swap=dffl_adaptive_rule_swap_effective,
+                adaptive_rule_swap_policy=dffl_adaptive_rule_swap_policy,
+                budget_total=int(dffl_budget_snapshot["total_rule_budget_effective"]),
+                budget_policy=str(dffl_budget_snapshot["allocation_policy"]),
+                adaptive_budget=dffl_adaptive_budget,
+                shuffle=dffl_shuffle_effective,
+                shuffle_policy=dffl_shuffle_policy,
+            )
+        )
+        dffl_learning_rate_effective = (
+            dffl_learning_rate * dffl_profile.learning_rate_scale_classification
+            if spec.task_type == "binary_classification"
+            else dffl_learning_rate * dffl_profile.learning_rate_scale_regression
+        )
+        dffl_refinement_cycles = max(refinement_cycles, dffl_profile.refinement_cycle_floor)
         phase_started_at = time.perf_counter()
         progress_log(f"seed={seed} model=dffl: start")
         hidden_high = 0.75 if spec.task_type == "binary_classification" else 0.8
@@ -3790,33 +4158,51 @@ def run_single_seed_dataset_benchmark(
             bootstrap_config=BootstrapConfig(decision_task_type=spec.task_type),
             device=device,
         )
-        shallow_trainer = FuzzyTrainer(
-            shallow_model,
-            TrainingConfig(
-                task_type=spec.task_type,
-                max_epochs=max_epochs,
-                learning_rate=fuzzy_learning_rate,
-                patience=min(patience, max_epochs),
-                batch_size=batch_size,
-                shuffle=True,
-                classification_threshold=classification_threshold,
-                binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
-                binary_loss_name=fuzzy_binary_loss_name,
-                binary_focal_gamma=fuzzy_binary_focal_gamma,
-                binary_soft_f1_weight=(
-                    fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
-                ),
-                regression_loss=fuzzy_regression_loss,
-                huber_delta=fuzzy_huber_delta,
-                regression_linear_residual_head=regression_residual_head_enabled,
-                device=device,
+        shallow_training_config = TrainingConfig(
+            task_type=spec.task_type,
+            max_epochs=max_epochs,
+            learning_rate=fuzzy_learning_rate,
+            patience=min(patience, max_epochs),
+            batch_size=batch_size,
+            shuffle=True,
+            classification_threshold=classification_threshold,
+            binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
+            binary_loss_name=fuzzy_binary_loss_name,
+            binary_focal_gamma=fuzzy_binary_focal_gamma,
+            binary_soft_f1_weight=(
+                fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
             ),
+            regression_loss=fuzzy_regression_loss,
+            huber_delta=fuzzy_huber_delta,
+            regression_linear_residual_head=regression_residual_head_enabled,
+            monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+            monitor_mode="max" if spec.task_type == "binary_classification" else None,
+            device=device,
         )
+        shallow_trainer = FuzzyTrainer(shallow_model, shallow_training_config)
         shallow_trainer.fit(
             train_inputs,
             model_train_targets["ruanfis_shallow"],
             validation_inputs,
             validation_targets,
+        )
+        _maybe_run_hard_sample_finetune(
+            enabled=fuzzy_hard_sample_training and "ruanfis_shallow" in hard_sample_enabled_models,
+            model_name="ruanfis_shallow",
+            model=shallow_model,
+            task_type=spec.task_type,
+            train_inputs=train_inputs,
+            train_targets=model_train_targets["ruanfis_shallow"],
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            base_training_config=shallow_training_config,
+            source=fuzzy_hard_sample_source,
+            hard_fraction=fuzzy_hard_sample_fraction,
+            hard_multiplier=fuzzy_hard_sample_multiplier,
+            finetune_epochs=fuzzy_hard_sample_finetune_epochs,
+            finetune_patience=fuzzy_hard_sample_finetune_patience,
+            baseline_hard_indices=baseline_hard_indices,
+            seed=seed,
         )
         trained_fuzzy_models["ruanfis_shallow"] = shallow_model
         model_top_k_rules["ruanfis_shallow"] = None
@@ -3826,42 +4212,94 @@ def run_single_seed_dataset_benchmark(
     if "ruanfis_stacked_anfis" in fuzzy_models:
         phase_started_at = time.perf_counter()
         progress_log(f"seed={seed} model=stacked: build+train start")
-        stacked_model = build_stacked_anfis_model(
-            build_stacked_config(
-                split.input_dim,
-                width_scale=stacked_width_scale,
-                rule_scale=stacked_rule_scale,
-                prototype_scoring_mode=stacked_prototype_scoring_mode,
-            ),
-            sample_inputs=train_inputs,
+        stacked_final_skip_indices = _resolve_stacked_final_skip_indices(
+            train_inputs=train_inputs,
+            train_targets=train_targets,
+            count=stacked_final_skip_input_count,
+            mode=stacked_final_skip_mode,
         )
-        stacked_trainer = FuzzyTrainer(
-            stacked_model,
-            TrainingConfig(
+        if stacked_final_skip_indices:
+            progress_log(
+                "seed={seed} model=stacked: final_skip mode={mode} indices={indices}".format(
+                    seed=seed,
+                    mode=stacked_final_skip_mode,
+                    indices=",".join(str(index) for index in stacked_final_skip_indices),
+                )
+            )
+        stacked_config = build_stacked_config(
+            split.input_dim,
+            width_scale=stacked_width_scale,
+            rule_scale=stacked_rule_scale,
+            prototype_scoring_mode=stacked_prototype_scoring_mode,
+            hidden_output_activation=hidden_output_activation,
+            final_skip_input_count=stacked_final_skip_input_count,
+            final_skip_input_indices=stacked_final_skip_indices,
+            final_skip_gates_enabled=stacked_final_skip_gates_enabled,
+            final_skip_gate_init_logit=stacked_final_skip_gate_init_logit,
+        )
+        if stacked_stagewise_init:
+            stacked_model = build_stagewise_initialized_stacked_anfis_model(
+                stacked_config,
+                sample_inputs=train_inputs,
+                sample_targets=model_train_targets["ruanfis_stacked_anfis"],
                 task_type=spec.task_type,
-                max_epochs=max_epochs,
+                epochs_per_hidden_layer=stacked_stagewise_init_epochs,
                 learning_rate=fuzzy_learning_rate,
-                patience=min(patience, max_epochs),
                 batch_size=batch_size,
                 shuffle=True,
-                classification_threshold=classification_threshold,
-                binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
-                binary_loss_name=fuzzy_binary_loss_name,
-                binary_focal_gamma=fuzzy_binary_focal_gamma,
-                binary_soft_f1_weight=(
-                    fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
-                ),
-                regression_loss=fuzzy_regression_loss,
-                huber_delta=fuzzy_huber_delta,
-                regression_linear_residual_head=regression_residual_head_enabled,
                 device=device,
+            )
+        else:
+            stacked_model = build_stacked_anfis_model(
+                stacked_config,
+                sample_inputs=train_inputs,
+            )
+        stacked_training_config = TrainingConfig(
+            task_type=spec.task_type,
+            max_epochs=max_epochs,
+            learning_rate=fuzzy_learning_rate,
+            patience=min(patience, max_epochs),
+            batch_size=batch_size,
+            shuffle=True,
+            classification_threshold=classification_threshold,
+            binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
+            binary_loss_name=fuzzy_binary_loss_name,
+            binary_focal_gamma=fuzzy_binary_focal_gamma,
+            binary_soft_f1_weight=(
+                fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
             ),
+            regression_loss=fuzzy_regression_loss,
+            huber_delta=fuzzy_huber_delta,
+            regression_linear_residual_head=regression_residual_head_enabled,
+            monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+            monitor_mode="max" if spec.task_type == "binary_classification" else None,
+            block_gate_l1_weight=max(0.0, float(stacked_final_skip_gate_l1_weight)),
+            device=device,
         )
+        stacked_trainer = FuzzyTrainer(stacked_model, stacked_training_config)
         stacked_trainer.fit(
             train_inputs,
             model_train_targets["ruanfis_stacked_anfis"],
             validation_inputs,
             validation_targets,
+        )
+        _maybe_run_hard_sample_finetune(
+            enabled=fuzzy_hard_sample_training and "ruanfis_stacked_anfis" in hard_sample_enabled_models,
+            model_name="ruanfis_stacked_anfis",
+            model=stacked_model,
+            task_type=spec.task_type,
+            train_inputs=train_inputs,
+            train_targets=model_train_targets["ruanfis_stacked_anfis"],
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            base_training_config=stacked_training_config,
+            source=fuzzy_hard_sample_source,
+            hard_fraction=fuzzy_hard_sample_fraction,
+            hard_multiplier=fuzzy_hard_sample_multiplier,
+            finetune_epochs=fuzzy_hard_sample_finetune_epochs,
+            finetune_patience=fuzzy_hard_sample_finetune_patience,
+            baseline_hard_indices=baseline_hard_indices,
+            seed=seed,
         )
         trained_fuzzy_models["ruanfis_stacked_anfis"] = stacked_model
         model_top_k_rules["ruanfis_stacked_anfis"] = None
@@ -3878,36 +4316,57 @@ def run_single_seed_dataset_benchmark(
                 width_scale=hierarchical_width_scale,
                 rule_scale=hierarchical_rule_scale,
                 prototype_scoring_mode=hierarchical_prototype_scoring_mode,
+                hidden_output_activation=hidden_output_activation,
             ),
             sample_inputs=train_inputs,
         )
-        hierarchical_anfis_trainer = FuzzyTrainer(
-            hierarchical_anfis_model,
-            TrainingConfig(
-                task_type=spec.task_type,
-                max_epochs=max_epochs,
-                learning_rate=fuzzy_learning_rate,
-                patience=min(patience, max_epochs),
-                batch_size=batch_size,
-                shuffle=True,
-                classification_threshold=classification_threshold,
-                binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
-                binary_loss_name=fuzzy_binary_loss_name,
-                binary_focal_gamma=fuzzy_binary_focal_gamma,
-                binary_soft_f1_weight=(
-                    fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
-                ),
-                regression_loss=fuzzy_regression_loss,
-                huber_delta=fuzzy_huber_delta,
-                regression_linear_residual_head=regression_residual_head_enabled,
-                device=device,
+        hierarchical_anfis_training_config = TrainingConfig(
+            task_type=spec.task_type,
+            max_epochs=max_epochs,
+            learning_rate=fuzzy_learning_rate,
+            patience=min(patience, max_epochs),
+            batch_size=batch_size,
+            shuffle=True,
+            classification_threshold=classification_threshold,
+            binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
+            binary_loss_name=fuzzy_binary_loss_name,
+            binary_focal_gamma=fuzzy_binary_focal_gamma,
+            binary_soft_f1_weight=(
+                fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
             ),
+            regression_loss=fuzzy_regression_loss,
+            huber_delta=fuzzy_huber_delta,
+            regression_linear_residual_head=regression_residual_head_enabled,
+            monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+            monitor_mode="max" if spec.task_type == "binary_classification" else None,
+            device=device,
         )
+        hierarchical_anfis_trainer = FuzzyTrainer(hierarchical_anfis_model, hierarchical_anfis_training_config)
         hierarchical_anfis_trainer.fit(
             train_inputs,
             model_train_targets["ruanfis_hierarchical_anfis"],
             validation_inputs,
             validation_targets,
+        )
+        _maybe_run_hard_sample_finetune(
+            enabled=(
+                fuzzy_hard_sample_training and "ruanfis_hierarchical_anfis" in hard_sample_enabled_models
+            ),
+            model_name="ruanfis_hierarchical_anfis",
+            model=hierarchical_anfis_model,
+            task_type=spec.task_type,
+            train_inputs=train_inputs,
+            train_targets=model_train_targets["ruanfis_hierarchical_anfis"],
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            base_training_config=hierarchical_anfis_training_config,
+            source=fuzzy_hard_sample_source,
+            hard_fraction=fuzzy_hard_sample_fraction,
+            hard_multiplier=fuzzy_hard_sample_multiplier,
+            finetune_epochs=fuzzy_hard_sample_finetune_epochs,
+            finetune_patience=fuzzy_hard_sample_finetune_patience,
+            baseline_hard_indices=baseline_hard_indices,
+            seed=seed,
         )
         trained_fuzzy_models["ruanfis_hierarchical_anfis"] = hierarchical_anfis_model
         model_top_k_rules["ruanfis_hierarchical_anfis"] = None
@@ -4465,6 +4924,22 @@ def build_reproducibility_manifest_payload(
                 "fuzzy_distill_weight": float(args.fuzzy_distill_weight),
                 "fuzzy_distill_models": list(parse_optional_fuzzy_model_names(args.fuzzy_distill_models)),
                 "fuzzy_distill_teacher_trees": int(args.fuzzy_distill_teacher_trees),
+                "fuzzy_hard_sample_training": bool(args.fuzzy_hard_sample_training),
+                "fuzzy_hard_sample_models": list(parse_optional_fuzzy_model_names(args.fuzzy_hard_sample_models)),
+                "fuzzy_hard_sample_source": str(args.fuzzy_hard_sample_source),
+                "fuzzy_hard_sample_fraction": float(args.fuzzy_hard_sample_fraction),
+                "fuzzy_hard_sample_multiplier": int(args.fuzzy_hard_sample_multiplier),
+                "fuzzy_hard_sample_finetune_epochs": int(args.fuzzy_hard_sample_finetune_epochs),
+                "fuzzy_hard_sample_finetune_patience": int(args.fuzzy_hard_sample_finetune_patience),
+                "fuzzy_hard_sample_teacher_trees": int(args.fuzzy_hard_sample_teacher_trees),
+                "hidden_output_activation": str(args.hidden_output_activation),
+                "stacked_stagewise_init": bool(args.stacked_stagewise_init),
+                "stacked_stagewise_init_epochs": int(args.stacked_stagewise_init_epochs),
+                "stacked_final_skip_inputs": int(args.stacked_final_skip_inputs),
+                "stacked_final_skip_mode": str(args.stacked_final_skip_mode),
+                "stacked_final_skip_gates": bool(args.stacked_final_skip_gates),
+                "stacked_final_skip_gate_init_logit": float(args.stacked_final_skip_gate_init_logit),
+                "stacked_final_skip_gate_l1_weight": float(args.stacked_final_skip_gate_l1_weight),
                 "include_sklearn_baselines": bool(not args.skip_sklearn),
                 "gpu_only": bool(args.gpu_only),
                 "device": args.device if args.device is not None else "default",
@@ -4642,6 +5117,17 @@ def build_reproducibility_manifest_markdown(payload: dict[str, object]) -> str:
     lines.append(f"- fuzzy_distill_weight: `{execution['fuzzy_distill_weight']}`")
     lines.append(f"- fuzzy_distill_models: `{', '.join(execution['fuzzy_distill_models']) if execution['fuzzy_distill_models'] else 'none'}`")
     lines.append(f"- fuzzy_distill_teacher_trees: `{execution['fuzzy_distill_teacher_trees']}`")
+    lines.append(f"- fuzzy_hard_sample_training: `{execution['fuzzy_hard_sample_training']}`")
+    lines.append(
+        f"- fuzzy_hard_sample_models: "
+        f"`{', '.join(execution['fuzzy_hard_sample_models']) if execution['fuzzy_hard_sample_models'] else 'none'}`"
+    )
+    lines.append(f"- fuzzy_hard_sample_source: `{execution['fuzzy_hard_sample_source']}`")
+    lines.append(f"- fuzzy_hard_sample_fraction: `{execution['fuzzy_hard_sample_fraction']}`")
+    lines.append(f"- fuzzy_hard_sample_multiplier: `{execution['fuzzy_hard_sample_multiplier']}`")
+    lines.append(f"- fuzzy_hard_sample_finetune_epochs: `{execution['fuzzy_hard_sample_finetune_epochs']}`")
+    lines.append(f"- fuzzy_hard_sample_finetune_patience: `{execution['fuzzy_hard_sample_finetune_patience']}`")
+    lines.append(f"- fuzzy_hard_sample_teacher_trees: `{execution['fuzzy_hard_sample_teacher_trees']}`")
     lines.append("")
     lines.append("## Training Budgets")
     lines.append("")
@@ -4807,12 +5293,60 @@ def main() -> None:
     )
     parser.add_argument("--stacked-width-scale", type=float, default=1.0)
     parser.add_argument("--stacked-rule-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--stacked-stagewise-init",
+        action="store_true",
+        help="Warm hidden stacked layers before generating upper-layer prototype rules.",
+    )
+    parser.add_argument(
+        "--stacked-stagewise-init-epochs",
+        type=int,
+        default=12,
+        help="Epochs per hidden stacked layer for --stacked-stagewise-init.",
+    )
+    parser.add_argument(
+        "--stacked-final-skip-inputs",
+        type=int,
+        default=0,
+        help="Number of original input features concatenated into the final stacked fuzzy layer.",
+    )
+    parser.add_argument(
+        "--stacked-final-skip-mode",
+        type=str,
+        default="first",
+        choices=("first", "target_corr", "target_corr_diverse"),
+        help="Selection rule for raw features concatenated into the final stacked fuzzy layer.",
+    )
+    parser.add_argument(
+        "--stacked-final-skip-gates",
+        action="store_true",
+        help="Enable trainable gates on stacked final raw-skip features.",
+    )
+    parser.add_argument(
+        "--stacked-final-skip-gate-init-logit",
+        type=float,
+        default=2.0,
+        help="Initial gate logit for stacked final raw-skip features.",
+    )
+    parser.add_argument(
+        "--stacked-final-skip-gate-l1-weight",
+        type=float,
+        default=0.0,
+        help="L1 weight on stacked final raw-skip gates (uses block-gate regularizer slot).",
+    )
     parser.add_argument("--hierarchical-width-scale", type=float, default=1.0)
     parser.add_argument("--hierarchical-rule-scale", type=float, default=1.0)
     parser.add_argument("--hierarchical-group-size", type=int, default=4)
     parser.add_argument("--stacked-prototype-scoring-mode", type=str, default="max", choices=("max", "hybrid"))
     parser.add_argument(
         "--hierarchical-prototype-scoring-mode", type=str, default="max", choices=("max", "hybrid")
+    )
+    parser.add_argument(
+        "--hidden-output-activation",
+        type=str,
+        default="identity",
+        choices=("identity", "sigmoid"),
+        help="Optional activation for hidden Sugeno outputs in stacked/hierarchical baselines.",
     )
     parser.add_argument("--fuzzy-binary-loss-name", type=str, default="bce", choices=("bce", "focal"))
     parser.add_argument("--fuzzy-binary-focal-gamma", type=float, default=2.0)
@@ -4843,6 +5377,57 @@ def main() -> None:
         type=int,
         default=400,
         help="Number of trees in ExtraTrees teacher used for distillation.",
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-training",
+        action="store_true",
+        help="Enable second-stage hard-sample finetune for selected fuzzy models.",
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-models",
+        type=str,
+        default="stacked,hierarchical",
+        help=(
+            "Comma-separated fuzzy models for hard-sample finetune "
+            "(aliases supported). Use 'none' to disable."
+        ),
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-source",
+        type=str,
+        default="baseline",
+        choices=("self", "baseline"),
+        help="Hard-sample source: model self-errors or ExtraTrees baseline errors.",
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-fraction",
+        type=float,
+        default=0.25,
+        help="Top fraction of hardest train samples used for oversampling.",
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-multiplier",
+        type=int,
+        default=3,
+        help="Train duplication multiplier for selected hard samples.",
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-finetune-epochs",
+        type=int,
+        default=16,
+        help="Max epochs for hard-sample finetune stage.",
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-finetune-patience",
+        type=int,
+        default=5,
+        help="Early-stopping patience for hard-sample finetune stage.",
+    )
+    parser.add_argument(
+        "--fuzzy-hard-sample-teacher-trees",
+        type=int,
+        default=400,
+        help="ExtraTrees size for baseline-driven hard-sample selection.",
     )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--patience", type=int, default=20)
@@ -4917,6 +5502,8 @@ def main() -> None:
     seeds = parse_seeds(args.seeds)
     fuzzy_models = parse_fuzzy_model_names(args.fuzzy_models)
     fuzzy_distill_models = parse_optional_fuzzy_model_names(args.fuzzy_distill_models)
+    fuzzy_hard_sample_models = parse_optional_fuzzy_model_names(args.fuzzy_hard_sample_models)
+    hidden_output_activation = None if args.hidden_output_activation == "identity" else args.hidden_output_activation
 
     dataset_results: dict[str, MultiSeedBenchmarkResult] = {}
     dataset_reports: dict[str, str] = {}
@@ -5018,11 +5605,19 @@ def main() -> None:
                 dffl_tiny_restarts=max(1, int(args.dffl_tiny_restarts)),
                 stacked_width_scale=args.stacked_width_scale,
                 stacked_rule_scale=args.stacked_rule_scale,
+                stacked_stagewise_init=bool(args.stacked_stagewise_init),
+                stacked_stagewise_init_epochs=int(args.stacked_stagewise_init_epochs),
+                stacked_final_skip_input_count=int(args.stacked_final_skip_inputs),
+                stacked_final_skip_mode=str(args.stacked_final_skip_mode),
+                stacked_final_skip_gates_enabled=bool(args.stacked_final_skip_gates),
+                stacked_final_skip_gate_init_logit=float(args.stacked_final_skip_gate_init_logit),
+                stacked_final_skip_gate_l1_weight=float(args.stacked_final_skip_gate_l1_weight),
                 hierarchical_width_scale=args.hierarchical_width_scale,
                 hierarchical_rule_scale=args.hierarchical_rule_scale,
                 hierarchical_group_size=args.hierarchical_group_size,
                 stacked_prototype_scoring_mode=args.stacked_prototype_scoring_mode,
                 hierarchical_prototype_scoring_mode=args.hierarchical_prototype_scoring_mode,
+                hidden_output_activation=hidden_output_activation,
                 fuzzy_binary_loss_name=args.fuzzy_binary_loss_name,
                 fuzzy_binary_focal_gamma=args.fuzzy_binary_focal_gamma,
                 fuzzy_binary_auto_pos_weight=args.fuzzy_binary_auto_pos_weight,
@@ -5032,6 +5627,14 @@ def main() -> None:
                 fuzzy_distill_weight=args.fuzzy_distill_weight,
                 fuzzy_distill_models=fuzzy_distill_models,
                 fuzzy_distill_teacher_trees=args.fuzzy_distill_teacher_trees,
+                fuzzy_hard_sample_training=bool(args.fuzzy_hard_sample_training),
+                fuzzy_hard_sample_models=fuzzy_hard_sample_models,
+                fuzzy_hard_sample_source=str(args.fuzzy_hard_sample_source),
+                fuzzy_hard_sample_fraction=float(args.fuzzy_hard_sample_fraction),
+                fuzzy_hard_sample_multiplier=int(args.fuzzy_hard_sample_multiplier),
+                fuzzy_hard_sample_finetune_epochs=int(args.fuzzy_hard_sample_finetune_epochs),
+                fuzzy_hard_sample_finetune_patience=int(args.fuzzy_hard_sample_finetune_patience),
+                fuzzy_hard_sample_teacher_trees=int(args.fuzzy_hard_sample_teacher_trees),
                 batch_size=args.batch_size,
                 patience=args.patience,
                 classification_threshold=args.classification_threshold,
@@ -5188,6 +5791,25 @@ def main() -> None:
         f"fuzzy_distill_weight: {args.fuzzy_distill_weight}",
         f"fuzzy_distill_models: {', '.join(fuzzy_distill_models) if fuzzy_distill_models else 'none'}",
         f"fuzzy_distill_teacher_trees: {args.fuzzy_distill_teacher_trees}",
+        f"fuzzy_hard_sample_training: {args.fuzzy_hard_sample_training}",
+        (
+            "fuzzy_hard_sample_models: "
+            f"{', '.join(fuzzy_hard_sample_models) if fuzzy_hard_sample_models else 'none'}"
+        ),
+        f"fuzzy_hard_sample_source: {args.fuzzy_hard_sample_source}",
+        f"fuzzy_hard_sample_fraction: {args.fuzzy_hard_sample_fraction}",
+        f"fuzzy_hard_sample_multiplier: {args.fuzzy_hard_sample_multiplier}",
+        f"fuzzy_hard_sample_finetune_epochs: {args.fuzzy_hard_sample_finetune_epochs}",
+        f"fuzzy_hard_sample_finetune_patience: {args.fuzzy_hard_sample_finetune_patience}",
+        f"fuzzy_hard_sample_teacher_trees: {args.fuzzy_hard_sample_teacher_trees}",
+        f"hidden_output_activation: {args.hidden_output_activation}",
+        f"stacked_stagewise_init: {args.stacked_stagewise_init}",
+        f"stacked_stagewise_init_epochs: {args.stacked_stagewise_init_epochs}",
+        f"stacked_final_skip_inputs: {args.stacked_final_skip_inputs}",
+        f"stacked_final_skip_mode: {args.stacked_final_skip_mode}",
+        f"stacked_final_skip_gates: {args.stacked_final_skip_gates}",
+        f"stacked_final_skip_gate_init_logit: {args.stacked_final_skip_gate_init_logit}",
+        f"stacked_final_skip_gate_l1_weight: {args.stacked_final_skip_gate_l1_weight}",
         f"tune_fuzzy_threshold: {args.tune_fuzzy_threshold}",
         f"tune_fuzzy_threshold_calibrated: {args.tune_fuzzy_threshold_calibrated}",
         f"sklearn_baselines: {'off' if args.skip_sklearn else 'on'}",
@@ -5248,6 +5870,14 @@ def main() -> None:
             "fuzzy_distill_weight": float(args.fuzzy_distill_weight),
             "fuzzy_distill_models": list(fuzzy_distill_models),
             "fuzzy_distill_teacher_trees": int(args.fuzzy_distill_teacher_trees),
+            "fuzzy_hard_sample_training": bool(args.fuzzy_hard_sample_training),
+            "fuzzy_hard_sample_models": list(fuzzy_hard_sample_models),
+            "fuzzy_hard_sample_source": str(args.fuzzy_hard_sample_source),
+            "fuzzy_hard_sample_fraction": float(args.fuzzy_hard_sample_fraction),
+            "fuzzy_hard_sample_multiplier": int(args.fuzzy_hard_sample_multiplier),
+            "fuzzy_hard_sample_finetune_epochs": int(args.fuzzy_hard_sample_finetune_epochs),
+            "fuzzy_hard_sample_finetune_patience": int(args.fuzzy_hard_sample_finetune_patience),
+            "fuzzy_hard_sample_teacher_trees": int(args.fuzzy_hard_sample_teacher_trees),
             "tune_fuzzy_threshold": bool(args.tune_fuzzy_threshold),
             "tune_fuzzy_threshold_calibrated": bool(args.tune_fuzzy_threshold_calibrated),
             "skip_sklearn": bool(args.skip_sklearn),
