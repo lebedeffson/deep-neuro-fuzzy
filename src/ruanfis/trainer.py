@@ -71,6 +71,9 @@ class TrainingConfig:
     prune_threshold: float = 0.1
     prune_temperature: float = 0.05
     prune_keep_at_least: int = 1
+    verbose: bool = False
+    log_every_n_epochs: int = 1
+    log_prefix: str = ""
 
 
 @dataclass(frozen=True)
@@ -319,6 +322,47 @@ class FuzzyTrainer:
                     validation_metrics=dict(validation_result.metrics) if validation_result is not None else None,
                 )
             )
+            if self.config.verbose and self.config.log_every_n_epochs > 0:
+                should_log_epoch = (
+                    epoch == 1
+                    or epoch == self.config.max_epochs
+                    or (epoch % self.config.log_every_n_epochs == 0)
+                )
+                if should_log_epoch:
+                    prefix = f"{self.config.log_prefix} " if self.config.log_prefix else ""
+                    if validation_result is not None and validation_result.metrics is not None:
+                        print(
+                            (
+                                "[epoch] {prefix}epoch={epoch}/{max_epochs} "
+                                "train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
+                                "monitor={monitor_name}:{monitor_value:.6f}"
+                            ).format(
+                                prefix=prefix,
+                                epoch=epoch,
+                                max_epochs=self.config.max_epochs,
+                                train_loss=float(train_result.loss),
+                                val_loss=float(validation_result.loss),
+                                monitor_name=monitor_name,
+                                monitor_value=float(monitor_value),
+                            ),
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            (
+                                "[epoch] {prefix}epoch={epoch}/{max_epochs} "
+                                "train_loss={train_loss:.6f} "
+                                "monitor={monitor_name}:{monitor_value:.6f}"
+                            ).format(
+                                prefix=prefix,
+                                epoch=epoch,
+                                max_epochs=self.config.max_epochs,
+                                train_loss=float(train_result.loss),
+                                monitor_name=monitor_name,
+                                monitor_value=float(monitor_value),
+                            ),
+                            flush=True,
+                        )
 
             improved = (
                 monitor_value < best_monitor_value - self.config.min_delta
@@ -337,6 +381,21 @@ class FuzzyTrainer:
                 break
 
         self.model.load_state_dict(best_state)
+        if self.config.verbose:
+            prefix = f"{self.config.log_prefix} " if self.config.log_prefix else ""
+            print(
+                (
+                    "[epoch] {prefix}training_done epochs_ran={epochs_ran} "
+                    "best_epoch={best_epoch} best_{monitor_name}={best_value:.6f}"
+                ).format(
+                    prefix=prefix,
+                    epochs_ran=len(history),
+                    best_epoch=best_epoch,
+                    monitor_name=monitor_name,
+                    best_value=float(best_monitor_value),
+                ),
+                flush=True,
+            )
 
         if self.config.task_type == "regression":
             if self.config.regression_linear_residual_head:

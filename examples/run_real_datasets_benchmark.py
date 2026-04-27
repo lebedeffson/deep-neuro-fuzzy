@@ -3797,6 +3797,8 @@ def run_single_seed_dataset_benchmark(
     rule_probability_threshold: float,
     tune_fuzzy_threshold: bool,
     tune_fuzzy_threshold_calibrated: bool,
+    log_epochs: bool,
+    log_epochs_every: int,
     dffl_one_phase: bool,
     device: str | None,
     fuzzy_models: tuple[str, ...] = FUZZY_MODEL_NAMES,
@@ -4284,6 +4286,9 @@ def run_single_seed_dataset_benchmark(
             regularization_warmup_epochs=max(1, max_epochs // 3),
             top_k_warmup_epochs=(max(1, max_epochs // 4) if dffl_profile.top_k_rules is not None else 0),
             prune_after_fit=False,
+            verbose=bool(log_epochs),
+            log_every_n_epochs=max(1, int(log_epochs_every)),
+            log_prefix=f"seed={seed} model=dffl",
             device=device,
         )
         if spec.task_type == "binary_classification" and spec.name == "breast_cancer":
@@ -4516,6 +4521,9 @@ def run_single_seed_dataset_benchmark(
             regression_linear_residual_head=regression_residual_head_enabled,
             monitor_metric="f1" if spec.task_type == "binary_classification" else None,
             monitor_mode="max" if spec.task_type == "binary_classification" else None,
+            verbose=bool(log_epochs),
+            log_every_n_epochs=max(1, int(log_epochs_every)),
+            log_prefix=f"seed={seed} model=shallow",
             device=device,
         )
         shallow_trainer = FuzzyTrainer(shallow_model, shallow_training_config)
@@ -4613,6 +4621,9 @@ def run_single_seed_dataset_benchmark(
             monitor_metric="f1" if spec.task_type == "binary_classification" else None,
             monitor_mode="max" if spec.task_type == "binary_classification" else None,
             block_gate_l1_weight=max(0.0, float(stacked_final_skip_gate_l1_weight)),
+            verbose=bool(log_epochs),
+            log_every_n_epochs=max(1, int(log_epochs_every)),
+            log_prefix=f"seed={seed} model=stacked",
             device=device,
         )
         stacked_trainer = FuzzyTrainer(stacked_model, stacked_training_config)
@@ -4678,6 +4689,9 @@ def run_single_seed_dataset_benchmark(
             regression_linear_residual_head=regression_residual_head_enabled,
             monitor_metric="f1" if spec.task_type == "binary_classification" else None,
             monitor_mode="max" if spec.task_type == "binary_classification" else None,
+            verbose=bool(log_epochs),
+            log_every_n_epochs=max(1, int(log_epochs_every)),
+            log_prefix=f"seed={seed} model=hierarchical",
             device=device,
         )
         hierarchical_anfis_trainer = FuzzyTrainer(hierarchical_anfis_model, hierarchical_anfis_training_config)
@@ -5845,6 +5859,17 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--patience", type=int, default=20)
+    parser.add_argument(
+        "--log-epochs",
+        action="store_true",
+        help="Print per-epoch fuzzy training logs into stdout/run.status.log.",
+    )
+    parser.add_argument(
+        "--log-epochs-every",
+        type=int,
+        default=5,
+        help="Epoch logging frequency when --log-epochs is enabled.",
+    )
     parser.add_argument("--classification-threshold", type=float, default=0.5)
     parser.add_argument(
         "--rule-probability-threshold",
@@ -6067,6 +6092,8 @@ def main() -> None:
                 classification_threshold=args.classification_threshold,
                 tune_fuzzy_threshold=args.tune_fuzzy_threshold,
                 tune_fuzzy_threshold_calibrated=args.tune_fuzzy_threshold_calibrated,
+                log_epochs=bool(args.log_epochs),
+                log_epochs_every=max(1, int(args.log_epochs_every)),
                 rule_probability_threshold=float(args.rule_probability_threshold),
                 dffl_one_phase=args.dffl_one_phase,
                 device=args.device,

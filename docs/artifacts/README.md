@@ -16,7 +16,7 @@ We use two large-scale tabular datasets:
 | --- | ---: |
 | Logistic Regression | 0.7551 |
 | shallow fuzzy | 0.7700 |
-| DFFL final | 0.8413 |
+| DFFL (fast profile, 3 seeds) | 0.8361 +/- 0.0031 |
 | hist gradient boosting | 0.8321 |
 | MLP | 0.8591 |
 | hierarchical fuzzy | 0.9033 |
@@ -33,6 +33,9 @@ Key promoted stacked metrics on Covtype full:
 Main claim supported by this dataset:
 - stacked deep ANFIS is clearly stronger than other fuzzy/neural/linear baselines,
 - but still below Random Forest and Extra Trees.
+
+Note:
+- DFFL tuned single-seed check reached `0.8413`, but paper-facing value is the three-seed run.
 
 ## KDDCup99 Full (Scalability Check)
 
