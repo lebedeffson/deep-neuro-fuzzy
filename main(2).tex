@@ -321,6 +321,8 @@ random forest & 0.9560$\pm$0.0001 & 0.9924$\pm$0.0001 & 0.9918$\pm$0.0001 & -- &
 
 The capacity-tuned stacked model substantially improves over the smaller reference configurations and becomes stronger than logistic regression, histogram gradient boosting, MLP, and the tested hierarchical fuzzy variant on full Covtype. However, it remains below Random Forest and Extra Trees. DFFL in the current three-seed fast profile reaches F1 $=0.8361\pm0.0031$, which is above linear and HGB baselines but below stacked and tree ensembles.
 
+As an additional fairness-oriented diagnostic, we ran a capacity-matched fuzzy-only setting on full Covtype under a unified fast budget. In this setting, stacked and DFFL use near-matched total rules (106 and 107 respectively), while hierarchical uses 171 rules in the same budget regime. Stacked remains the strongest fuzzy variant (F1 $=0.9049\pm0.0043$), followed by hierarchical (F1 $=0.8540\pm0.0051$) and DFFL (F1 $=0.8021\pm0.0075$). This diagnostic indicates that, in the current implementation, DFFL does not close the quality gap to stacked even when the rule-budget comparison is constrained.
+
 As a second large-scale check, we evaluate full \textit{kddcup99}. This dataset is useful for verifying scalability because all model families process multi-million samples without instability, but it is not strongly discriminative because most methods approach perfect scores.
 
 \begin{table}[H]
@@ -345,6 +347,8 @@ RF / Extra Trees / HGB & \(\approx 1.0000\) \\
 
 To quantify the robustness of these differences, we report nonparametric tests on the benchmark summaries: Friedman test with pairwise Wilcoxon signed-rank tests and Holm correction. In the main comparison block, the dataset-level Friedman test is not significant ($\chi^2=2.04$, $p=0.6327$). In the extended block, the dataset-level Friedman test is significant ($\chi^2=6.00$, $p=0.0383$), but no pairwise comparison remains significant after Holm correction at $\alpha=0.05$.
 These significance tests are computed on the unified three-seed benchmark blocks; the separate full-Covtype capacity table is diagnostic and is not included in these tests.
+
+Because active-rule stability depends on the activation threshold $\tau_{\mathrm{act}}$, we additionally ran a threshold-sensitivity check on the main benchmark block with $\tau\in\{0.3,0.5,0.7\}$. At $\tau=0.3$, mean active-rule Jaccard across datasets is 0.4511 (stacked), 0.4381 (hierarchical), and 0.2261 (DFFL). At the default $\tau=0.5$, the same values are 0.1218, 0.1640, and 0.2198. At $\tau=0.7$, stacked and hierarchical saturate at 1.0 in this fast setting due very sparse surviving active-rule sets, while DFFL remains at 0.2090. We therefore keep $\tau_{\mathrm{act}}=0.5$ as the default reporting point and interpret high-$\tau$ values with caution.
 
 The comparison with external baselines is included only to contextualize raw predictive performance. The main contribution of this study is the comparative analysis of neuro-fuzzy architectures in terms of predictive quality, rule-base complexity, and internal rule stability.
 
@@ -410,6 +414,8 @@ The empirical comparison suggests that different forms of depth in neuro-fuzzy s
 The additional Covtype capacity check clarifies an important implementation-level point. The original stacked configuration was not only sensitive to optimization settings; it was also constrained by its number of rules and hidden concepts. Increasing the stacked capacity and allowing a gated final skip from selected raw features produced the strongest fuzzy result on the large Covtype task. This indicates that part of the quality gap came from information compression in the stacked representation. At the same time, the gain required a larger rule budget and reduced active-rule Jaccard, so the improvement again follows a quality--complexity--stability trade-off.
 
 On full Covtype, DFFL final remains noticeably below the capacity-tuned stacked model. This suggests that DFFL still needs richer bridge/aggregation capacity to better preserve cross-feature information on high-dimensional large-scale tabular tasks.
+
+Runtime profiling on full Covtype (seed 23, matched fast settings) shows that stacked is the fastest of the three deep fuzzy variants in training (69.57s), hierarchical is intermediate (122.58s), and DFFL is the slowest (423.89s). Inference-plus-evaluation time remains in the same low-second range for all three models (about 2--3s in this setup). This supports the practical trade-off interpretation: DFFL currently has both a quality and training-time penalty relative to stacked under the tested configuration.
 
 This matters because the contribution of deep neuro-fuzzy models cannot be assessed solely in terms of RMSE or F1. If interpretability is treated as a property of the internal reasoning process rather than as a post hoc explanation, then reproducibility of the rule structure becomes a relevant criterion alongside predictive quality.
 

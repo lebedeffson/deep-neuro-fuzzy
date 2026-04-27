@@ -23,11 +23,22 @@
 
 ## Remaining before submission
 
-1. Capacity fairness: run a matched-capacity comparison (stacked vs hierarchical vs DFFL) on Covtype full.
-2. Stability sensitivity: add `tau={0.3,0.5,0.7}` active-rule Jaccard sensitivity table.
-3. Repro appendix: add compact per-dataset config table (optimizer, LR, epochs, batch, rules, group size, regularization weights).
-4. Runtime table: train/infer/runtime per model for large datasets.
-5. Optional quality strengthening: add one more discriminative large dataset (SUSY or HIGGS subset/full).
+1. Optional quality strengthening: finish one more discriminative large dataset (SUSY or HIGGS subset/full).  
+   Current status: SUSY run was started, but download was too slow; deferred to a separate run window.
+
+## Newly completed in this cycle
+
+1. Capacity fairness:
+   - run completed: `runs/covtypefull_capacity_matched_fuzzy3_3s_2026-04-27`
+   - key result: stacked `F1=0.9049+/-0.0043`, hierarchical `0.8540+/-0.0051`, DFFL `0.8021+/-0.0075`.
+2. Stability sensitivity:
+   - runs completed: `paper_main_fuzzy_tau03/05/07_3s_2026-04-27`
+   - table assembled in `docs/artifacts/article_support_tables_2026-04-27.md`.
+3. Repro appendix:
+   - compact hyperparameter table assembled in `docs/artifacts/article_support_tables_2026-04-27.md`.
+4. Runtime table:
+   - runtime profile runs completed for stacked/hierarchical/DFFL on Covtype full (seed 23),
+   - table assembled in `docs/artifacts/article_support_tables_2026-04-27.md`.
 
 ## Positioning to keep
 

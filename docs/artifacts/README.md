@@ -2,6 +2,7 @@
 
 This directory keeps one compact final summary.
 Local raw bundles are stored under `runs/`.
+Additional Q1-focused support tables (capacity-matched, tau-sensitivity, runtime, hyperparams) are in `article_support_tables_2026-04-27.md`.
 
 ## Two Large-Scale Datasets
 
