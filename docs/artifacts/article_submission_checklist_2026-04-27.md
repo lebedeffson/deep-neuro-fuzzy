@@ -1,5 +1,10 @@
 # Article Submission Checklist (2026-04-27)
 
+## Submission readiness (current)
+
+- Ready to submit with current evidence package.
+- Optional extra strengthening only: add one more large discriminative dataset (SUSY/HIGGS).
+
 ## Already fixed
 
 - Covtype DFFL numbers updated to the completed 3-seed run (`0.8361 +/- 0.0031`) in:
