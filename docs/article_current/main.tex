@@ -177,7 +177,7 @@ This staged procedure is specific to DFFL in this paper; shallow, stacked, and h
 
 \subsection{Experimental Protocol}
 
-The empirical evaluation was designed to compare the considered architectures within a unified experimental framework. The benchmark includes tabular regression and binary classification tasks, with a main comparison block on smaller standard data sets and an extended comparison block on larger data sets. For large-scale analysis, we use two datasets with different roles: full \textit{covtype\_binary} as the main discriminative benchmark and full \textit{kddcup99} as a feasibility/scalability check.
+The empirical evaluation was designed to compare the considered architectures within a unified experimental framework. The benchmark includes tabular regression and binary classification tasks, with a main comparison block on smaller standard data sets and an extended comparison block on larger data sets. For large-scale analysis, we use full \textit{covtype\_binary} as the main discriminative benchmark and \textit{kddcup99\_binary\_10percent} as a feasibility/scalability check with repeated-run stability reporting. We also report an additional discriminative large-scale check on \textit{SUSY-200k}.
 
 Reproducibility settings are fixed as follows: three seeds ($19,23,29$), test split $0.2$, validation split $0.2$ (from the original data), feature scaling by MinMax normalization to $[0,1]$, and target scaling to $[0,1]$ for regression tasks. The same seed-specific data split is used for all compared models.
 
@@ -243,7 +243,7 @@ Taken together, the global stability analysis and the local case-level trace def
 \section{Results}
 
 The compared architectures differ across the three evaluation dimensions considered in this study: predictive quality, rule-base complexity, and internal rule stability. In the main comparison block, stacked provides the strongest average-rank profile, while DFFL remains competitive on selected tasks and no architecture dominates all tasks simultaneously.
-The key numerical evidence is summarized in Table~\ref{tab:main_results}, Table~\ref{tab:extended_results}, Table~\ref{tab:covtype_capacity_check}, Table~\ref{tab:kdd_scalability}, Table~\ref{tab:best_vs_baseline}, and Table~\ref{tab:all_vs_baseline}, while the quality profile across tasks is shown in Fig.~\ref{fig:quality_main} and the quality--complexity--stability trade-off (main comparison block) is shown in Fig.~\ref{fig:complexity_stability}.
+The key numerical evidence is summarized in Table~\ref{tab:main_results}, Table~\ref{tab:extended_results}, Table~\ref{tab:covtype_capacity_check}, Table~\ref{tab:kdd_scalability}, Table~\ref{tab:susy_discriminative}, Table~\ref{tab:best_vs_baseline}, and Table~\ref{tab:all_vs_baseline}, while the quality profile across tasks is shown in Fig.~\ref{fig:quality_main} and the quality--complexity--stability trade-off (main comparison block) is shown in Fig.~\ref{fig:complexity_stability}.
 Values in Tables~\ref{tab:main_results}--\ref{tab:all_vs_baseline} are reported as mean $\pm$ standard deviation across three seeds, except entries explicitly marked as single-seed checks; complete run settings and outputs are provided in the reproducibility artifacts.
 For transparency, Table~\ref{tab:main_results} reports a unified reference run for all four neuro-fuzzy architectures under the same seeds, splits, preprocessing, and training budget.
 
@@ -323,11 +323,11 @@ The capacity-tuned stacked model substantially improves over the smaller referen
 
 As an additional fairness-oriented diagnostic, we ran a capacity-matched fuzzy-only setting on full Covtype under a unified fast budget. In this setting, stacked and DFFL use near-matched total rules (106 and 107 respectively), while hierarchical uses 171 rules in the same budget regime. Stacked remains the strongest fuzzy variant (F1 $=0.9049\pm0.0043$), followed by hierarchical (F1 $=0.8540\pm0.0051$) and DFFL (F1 $=0.8021\pm0.0075$). This diagnostic indicates that, in the current implementation, DFFL does not close the quality gap to stacked even when the rule-budget comparison is constrained.
 
-As a second large-scale check, we evaluate full \textit{kddcup99}. This dataset is useful for verifying scalability because all model families process multi-million samples without instability, but it is not strongly discriminative because most methods approach perfect scores.
+As a second large-scale check, we evaluate \textit{kddcup99\_binary\_10percent}. This setting remains useful for verifying scalability and repeated-run behavior, but it is not strongly discriminative because most methods approach perfect scores.
 
 \begin{table}[H]
 \centering
-\caption{Large-scale feasibility check on full \textit{kddcup99} (seed 23).}
+\caption{Large-scale feasibility check on \textit{kddcup99\_binary\_10percent}. Fuzzy values are mean $\pm$ std over three seeds; baseline values are a single-seed contextual snapshot (seed 23).}
 \label{tab:kdd_scalability}
 \scriptsize
 \setlength{\tabcolsep}{4pt}
@@ -335,12 +335,36 @@ As a second large-scale check, we evaluate full \textit{kddcup99}. This dataset 
 \toprule
 Model & F1 \\
 \midrule
-shallow fuzzy & 0.9993 \\
-stacked fuzzy & 0.9999 \\
-hierarchical fuzzy & 0.9998 \\
+shallow fuzzy & 0.9965$\pm$0.0006 \\
+stacked fuzzy & 0.9995$\pm$0.0001 \\
+hierarchical fuzzy & 0.9995$\pm$0.0001 \\
+DFFL & 0.9993$\pm$0.0001 \\
 logistic regression & 0.9991 \\
 MLP & 0.9999 \\
 RF / Extra Trees / HGB & \(\approx 1.0000\) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+To reduce the ``near-perfect'' saturation effect of KDD, we add a discriminative large-scale check on \textit{SUSY-200k}. Fuzzy-model values are reported over three seeds; baseline values are a single-seed snapshot (seed 23) and are therefore used as a contextual check, not as a significance-tested comparison block.
+
+\begin{table}[H]
+\centering
+\caption{Additional discriminative large-scale check on \textit{SUSY-200k}.}
+\label{tab:susy_discriminative}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
+\toprule
+Model & F1 & ROC-AUC & PR-AUC & Seeds \\
+\midrule
+shallow fuzzy & 0.7626$\pm$0.0062 & 0.8582$\pm$0.0072 & 0.8602$\pm$0.0092 & 3 \\
+stacked fuzzy & 0.7713$\pm$0.0039 & 0.8685$\pm$0.0039 & 0.8725$\pm$0.0042 & 3 \\
+hierarchical fuzzy & 0.7708$\pm$0.0047 & 0.8688$\pm$0.0032 & 0.8738$\pm$0.0028 & 3 \\
+DFFL & 0.7718$\pm$0.0020 & 0.8688$\pm$0.0021 & 0.8728$\pm$0.0015 & 3 \\
+logistic regression & 0.7395 & 0.8556 & 0.8595 & 1 \\
+hist gradient boosting & 0.7655 & 0.8745 & 0.8789 & 1 \\
+mlp classifier & 0.7687 & 0.8736 & 0.8787 & 1 \\
 \bottomrule
 \end{tabular}
 \end{table}

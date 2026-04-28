@@ -3928,16 +3928,27 @@ def run_single_seed_dataset_benchmark(
     model_prediction_postprocessors: dict[str, Callable[[torch.Tensor], torch.Tensor] | None] = {}
 
     if "ruanfis_refined_deep" in fuzzy_models:
+        analysis_train_max_samples = 80_000
+        analysis_validation_max_samples = 50_000
+        if int(split.input_dim) >= 96:
+            # High-dimensional interaction probes scale as O(n * d^2) and can trigger host OOM.
+            # Cap the structure-analysis subset while keeping the actual model training unchanged.
+            analysis_train_max_samples = 20_000
+            analysis_validation_max_samples = 12_000
+        elif int(split.input_dim) >= 64:
+            analysis_train_max_samples = 40_000
+            analysis_validation_max_samples = 25_000
+
         analysis_source_inputs, analysis_source_targets = _select_bootstrap_subset(
             train_inputs,
             train_targets,
-            max_samples=80_000,
+            max_samples=analysis_train_max_samples,
             seed=seed + 17,
         )
         analysis_validation_source_inputs, analysis_validation_source_targets = _select_bootstrap_subset(
             validation_inputs,
             validation_targets,
-            max_samples=50_000,
+            max_samples=analysis_validation_max_samples,
             seed=seed + 31,
         )
         if int(analysis_source_inputs.size(0)) < int(train_inputs.size(0)):
@@ -3950,15 +3961,31 @@ def run_single_seed_dataset_benchmark(
                     val_total=int(validation_inputs.size(0)),
                 )
             )
+        analysis_device_request = device
+        if (
+            analysis_device_request is not None
+            and str(analysis_device_request).strip().lower().startswith("cuda")
+            and int(split.input_dim) >= 96
+        ):
+            # High-dimensional pairwise interaction probes can exhaust VRAM on mid-range GPUs.
+            # Keep model training on CUDA, but run structure-analysis tensors on CPU.
+            analysis_device_request = "cpu"
+            progress_log(
+                "seed={seed} dffl_structure_analysis_device_override: cpu (input_dim={dim})".format(
+                    seed=seed,
+                    dim=int(split.input_dim),
+                )
+            )
+
         analysis_train_inputs, analysis_train_targets, analysis_device = _prepare_structure_analysis_tensors(
             inputs=analysis_source_inputs,
             targets=analysis_source_targets,
-            device=device,
+            device=analysis_device_request,
         )
         analysis_validation_inputs, analysis_validation_targets, _ = _prepare_structure_analysis_tensors(
             inputs=analysis_validation_source_inputs,
             targets=analysis_validation_source_targets,
-            device=device,
+            device=analysis_device_request,
         )
         dffl_profile = resolve_dffl_profile(
             profile_name=dffl_profile_name,
@@ -6126,16 +6153,35 @@ def main() -> None:
             else:
                 targets_tensor = torch.from_numpy(targets_array)
             full_inputs_tensor = torch.from_numpy(np.asarray(dataset_features).astype(np.float32))
+            full_analysis_max_samples = 80_000
+            if input_dim >= 96:
+                full_analysis_max_samples = 20_000
+            elif input_dim >= 64:
+                full_analysis_max_samples = 40_000
             full_inputs_tensor, targets_tensor = _select_bootstrap_subset(
                 full_inputs_tensor,
                 targets_tensor,
-                max_samples=80_000,
+                max_samples=full_analysis_max_samples,
                 seed=seeds[0] + 43,
             )
+            full_analysis_device_request = args.device
+            if (
+                full_analysis_device_request is not None
+                and str(full_analysis_device_request).strip().lower().startswith("cuda")
+                and input_dim >= 96
+            ):
+                full_analysis_device_request = "cpu"
+                print(
+                    (
+                        "[progress] dataset={dataset} dffl_post_analysis_device_override: "
+                        "cpu (input_dim={dim})"
+                    ).format(dataset=dataset_name, dim=input_dim),
+                    flush=True,
+                )
             analysis_full_inputs, analysis_full_targets, analysis_full_device = _prepare_structure_analysis_tensors(
                 inputs=full_inputs_tensor,
                 targets=targets_tensor,
-                device=args.device,
+                device=full_analysis_device_request,
             )
             dataset_feature_geometry_effective, dataset_feature_geometry_policy = _resolve_effective_feature_geometry(
                 requested_geometry=args.feature_geometry,
