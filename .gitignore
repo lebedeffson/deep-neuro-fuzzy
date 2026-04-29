@@ -38,6 +38,23 @@ docs/artifacts/progress/
 *.pth
 *.ckpt
 .codex
+susy(2).zip
+
+# LaTeX sources/build
+*.tex
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.toc
+*.out
+*.synctex.gz
+
+# Local metric bundles
+docs/article_current/article_metrics.json
 
 # OS files
 Thumbs.db
