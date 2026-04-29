@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -173,6 +174,108 @@ def _entropy(values: Tensor, epsilon: float = 1e-8) -> Tensor:
     return -(safe_values * safe_values.log()).sum(dim=1)
 
 
+def _mean_pairwise_distance(samples: Tensor) -> float:
+    if samples.ndim != 2 or samples.size(0) <= 1:
+        return 0.0
+    diffs = samples.unsqueeze(1) - samples.unsqueeze(0)
+    distances = torch.linalg.norm(diffs, dim=2)
+    mask = ~torch.eye(samples.size(0), dtype=torch.bool, device=samples.device)
+    values = distances[mask]
+    if values.numel() == 0:
+        return 0.0
+    return float(values.mean().item())
+
+
+def _hidden_concept_exemplar_compactness(
+    *,
+    model: DeepFuzzyFeatureModel,
+    inputs: Tensor,
+    top_k: int = 8,
+    concept_limit: int = 256,
+) -> float:
+    if inputs.ndim != 2 or inputs.size(0) < 4:
+        return float("nan")
+    device = next(model.parameters(), torch.empty(0)).device
+    model.eval()
+    with torch.no_grad():
+        _, trace = model.forward_with_trace(inputs.to(device=device, dtype=torch.float32))
+    concept_outputs: list[Tensor] = []
+    for stage_trace in trace.stage_traces:
+        for block_trace in stage_trace.block_traces:
+            concept_outputs.append(block_trace.outputs.detach().cpu())
+    if not concept_outputs:
+        return float("nan")
+    hidden = torch.cat(concept_outputs, dim=1)
+    if hidden.ndim != 2 or hidden.size(1) == 0:
+        return float("nan")
+
+    baseline_count = min(256, int(inputs.size(0)))
+    baseline = inputs[:baseline_count]
+    baseline_dist = _mean_pairwise_distance(baseline)
+    if baseline_dist <= 1e-12:
+        return float("nan")
+
+    concept_count = min(int(hidden.size(1)), concept_limit)
+    per_concept_scores: list[float] = []
+    for concept_index in range(concept_count):
+        activations = hidden[:, concept_index].abs()
+        if int(activations.numel()) < 2:
+            continue
+        k = min(top_k, int(activations.numel()))
+        if k <= 1:
+            continue
+        exemplar_indices = torch.topk(activations, k=k).indices
+        exemplar_inputs = inputs.index_select(0, exemplar_indices).cpu()
+        local_dist = _mean_pairwise_distance(exemplar_inputs)
+        normalized = local_dist / baseline_dist
+        score = max(0.0, min(1.0, 1.0 - normalized))
+        per_concept_scores.append(float(score))
+    if not per_concept_scores:
+        return float("nan")
+    return float(sum(per_concept_scores) / len(per_concept_scores))
+
+
+def _hidden_concept_expert_score(
+    *,
+    model: DeepFuzzyFeatureModel,
+    inputs: Tensor,
+    expert_labels: Mapping[str, float] | None,
+) -> tuple[float, float]:
+    if not expert_labels:
+        return float("nan"), float("nan")
+    if inputs.ndim != 2 or inputs.size(0) == 0:
+        return float("nan"), float("nan")
+
+    device = next(model.parameters(), torch.empty(0)).device
+    model.eval()
+    with torch.no_grad():
+        probe = inputs[: min(64, int(inputs.size(0)))].to(device=device, dtype=torch.float32)
+        _, trace = model.forward_with_trace(probe)
+
+    available_keys: set[str] = set()
+    for stage_trace in trace.stage_traces:
+        for block_trace in stage_trace.block_traces:
+            for concept_name in block_trace.output_names:
+                available_keys.add(f"{stage_trace.stage_name}/{block_trace.block_name}/{concept_name}")
+
+    if not available_keys:
+        return float("nan"), float("nan")
+
+    matched_scores: list[float] = []
+    for key, score in expert_labels.items():
+        if key in available_keys:
+            try:
+                matched_scores.append(float(score))
+            except Exception:
+                continue
+
+    if not matched_scores:
+        return float("nan"), 0.0
+
+    coverage = float(len(matched_scores) / max(1, len(expert_labels)))
+    return float(sum(matched_scores) / len(matched_scores)), coverage
+
+
 def _jaccard_similarity(left: Sequence[str], right: Sequence[str]) -> float:
     left_set = set(left)
     right_set = set(right)
@@ -281,6 +384,13 @@ def _summarize_fuzzy_model_explainability(
         metrics["hidden_top1_mass"] = float(sum(hidden_top1_values) / len(hidden_top1_values))
         metrics["hidden_top3_mass"] = float(sum(hidden_top3_values) / len(hidden_top3_values))
         metrics["hidden_entropy"] = float(sum(hidden_entropies) / len(hidden_entropies))
+    if isinstance(model, DeepFuzzyFeatureModel):
+        # Proxy for semantic concept coherence: top-activation exemplars per concept
+        # should occupy compact regions in the original input space.
+        metrics["hidden_concept_exemplar_compactness"] = _hidden_concept_exemplar_compactness(
+            model=model,
+            inputs=inputs.detach().cpu(),
+        )
 
     return metrics
 
@@ -342,6 +452,7 @@ def evaluate_trained_model(
     rule_probability_threshold: float = 0.5,
     top_k_rules: int | None = None,
     prediction_postprocessor: Callable[[Tensor], Tensor] | None = None,
+    dffl_concept_expert_labels: Mapping[str, float] | None = None,
 ) -> BenchmarkEntryResult:
     train_features = _to_feature_tensor(train_inputs)
     test_features = _to_feature_tensor(test_inputs)
@@ -383,6 +494,16 @@ def evaluate_trained_model(
             test_features,
             top_k_rules=top_k_rules,
         )
+        if isinstance(model, DeepFuzzyFeatureModel):
+            semantic_mean, semantic_coverage = _hidden_concept_expert_score(
+                model=model,
+                inputs=test_features,
+                expert_labels=dffl_concept_expert_labels,
+            )
+            if not math.isnan(semantic_mean):
+                explainability_metrics["hidden_concept_expert_score_mean"] = semantic_mean
+            if not math.isnan(semantic_coverage):
+                explainability_metrics["hidden_concept_expert_score_coverage"] = semantic_coverage
         stability_artifacts = _extract_fuzzy_model_stability_artifacts(
             model,
             rule_probability_threshold=rule_probability_threshold,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -34,6 +35,7 @@ class TrainingConfig:
     gradient_clip_norm: float | None = None
     shuffle: bool = True
     device: str | None = None
+    amp_enabled: bool | None = None
     classification_threshold: float = 0.5
     binary_auto_pos_weight: bool = False
     binary_pos_weight: float | None = None
@@ -61,10 +63,12 @@ class TrainingConfig:
     membership_coverage_weight: float = 0.0
     membership_min_coverage: float = 0.6
     decision_usage_balance_weight: float = 0.0
+    decision_usage_balance_every_n_steps: int = 1
     block_gate_l1_weight: float = 0.0
     block_agreement_weight: float = 0.0
     block_agreement_target_corr: float = 0.2
     block_agreement_stage_limit: int = 1
+    block_agreement_every_n_steps: int = 1
     regularization_warmup_epochs: int = 0
     top_k_warmup_epochs: int = 0
     prune_after_fit: bool = False
@@ -216,6 +220,10 @@ class FuzzyTrainer:
             raise ValueError("top_k_rules must be positive when provided.")
         if self.config.block_agreement_weight < 0.0:
             raise ValueError("block_agreement_weight must be non-negative.")
+        if self.config.decision_usage_balance_every_n_steps <= 0:
+            raise ValueError("decision_usage_balance_every_n_steps must be positive.")
+        if self.config.block_agreement_every_n_steps <= 0:
+            raise ValueError("block_agreement_every_n_steps must be positive.")
         if not -1.0 <= self.config.block_agreement_target_corr <= 1.0:
             raise ValueError("block_agreement_target_corr must be in [-1, 1].")
         if self.config.block_agreement_stage_limit < 0:
@@ -274,6 +282,8 @@ class FuzzyTrainer:
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
+        amp_enabled = self._resolve_amp_enabled(device)
+        grad_scaler = self._build_grad_scaler(amp_enabled)
 
         history: list[EpochRecord] = []
         best_state = copy.deepcopy(self.model.state_dict())
@@ -297,12 +307,15 @@ class FuzzyTrainer:
                 optimizer,
                 top_k_rules=epoch_top_k_rules,
                 regularization_scale=epoch_regularization_scale,
+                amp_enabled=amp_enabled,
+                grad_scaler=grad_scaler,
             )
             validation_result = (
                 self.evaluate(
                     validation_inputs,
                     validation_targets,
                     top_k_rules_override=epoch_top_k_rules,
+                    amp_enabled_override=amp_enabled,
                 )
                 if has_validation and validation_inputs is not None and validation_targets is not None
                 else None
@@ -412,9 +425,9 @@ class FuzzyTrainer:
                 keep_at_least=self.config.prune_keep_at_least,
             )
 
-        final_train = self.evaluate(train_inputs, train_targets)
+        final_train = self.evaluate(train_inputs, train_targets, amp_enabled_override=amp_enabled)
         final_validation = (
-            self.evaluate(validation_inputs, validation_targets)
+            self.evaluate(validation_inputs, validation_targets, amp_enabled_override=amp_enabled)
             if has_validation and validation_inputs is not None and validation_targets is not None
             else None
         )
@@ -438,10 +451,12 @@ class FuzzyTrainer:
         targets: Tensor,
         *,
         top_k_rules_override: int | None = None,
+        amp_enabled_override: bool | None = None,
     ) -> EvaluationResult:
         device = self._resolve_device()
         self.model.eval()
         top_k_rules = self.config.top_k_rules if top_k_rules_override is None else top_k_rules_override
+        amp_enabled = self._resolve_amp_enabled(device) if amp_enabled_override is None else bool(amp_enabled_override)
         batch_size = self.config.batch_size or inputs.size(0)
         if batch_size <= 0:
             raise ValueError("The batch size must be positive.")
@@ -449,17 +464,19 @@ class FuzzyTrainer:
         total_items = 0
         prediction_batches: list[Tensor] = []
         target_batches: list[Tensor] = []
+        autocast_ctx = self._resolve_autocast_context(amp_enabled)
         with torch.no_grad():
             for start in range(0, inputs.size(0), batch_size):
                 batch_inputs = inputs[start : start + batch_size].to(device=device, dtype=torch.float32)
                 batch_targets = targets[start : start + batch_size].to(device=device, dtype=torch.float32)
-                predictions = predict_with_optional_residual_head(
-                    self.model,
-                    batch_inputs,
-                    top_k_rules=top_k_rules,
-                )
-                aligned_targets = self._align_targets(predictions, batch_targets)
-                loss = self.loss_fn(predictions, aligned_targets)
+                with autocast_ctx():
+                    predictions = predict_with_optional_residual_head(
+                        self.model,
+                        batch_inputs,
+                        top_k_rules=top_k_rules,
+                    )
+                    aligned_targets = self._align_targets(predictions, batch_targets)
+                    loss = self.loss_fn(predictions, aligned_targets)
                 current_batch_size = int(batch_inputs.size(0))
                 total_loss += float(loss.item()) * current_batch_size
                 total_items += current_batch_size
@@ -505,58 +522,70 @@ class FuzzyTrainer:
         *,
         top_k_rules: int | None,
         regularization_scale: float,
+        amp_enabled: bool,
+        grad_scaler: torch.cuda.amp.GradScaler,
     ) -> EvaluationResult:
         self.model.train()
         prediction_batches: list[Tensor] = []
         target_batches: list[Tensor] = []
         total_task_loss = 0.0
         total_items = 0
+        autocast_ctx = self._resolve_autocast_context(amp_enabled)
 
-        for batch_inputs, batch_targets in self._iter_batches(inputs, targets):
+        for step_index, (batch_inputs, batch_targets) in enumerate(self._iter_batches(inputs, targets), start=1):
             optimizer.zero_grad()
-            predictions = self.model(batch_inputs, top_k_rules=top_k_rules)
-            aligned_targets = self._align_targets(predictions, batch_targets)
-            if self.config.task_type == "binary_classification" and self.config.binary_loss_name == "focal":
-                task_loss = self._binary_focal_loss(
-                    predictions,
-                    aligned_targets,
-                    gamma=self.config.binary_focal_gamma,
-                    alpha=self._binary_focal_alpha_effective,
-                    pos_weight=self._binary_pos_weight_tensor,
-                )
-            else:
-                task_loss = self.loss_fn(predictions, aligned_targets)
-            if (
-                self.config.task_type == "binary_classification"
-                and self.config.binary_soft_f1_weight > 0.0
-            ):
-                task_loss = task_loss + (
-                    self.config.binary_soft_f1_weight
-                    * self._binary_soft_f1_loss(
+            with autocast_ctx():
+                predictions = self.model(batch_inputs, top_k_rules=top_k_rules)
+                aligned_targets = self._align_targets(predictions, batch_targets)
+                if self.config.task_type == "binary_classification" and self.config.binary_loss_name == "focal":
+                    task_loss = self._binary_focal_loss(
                         predictions,
                         aligned_targets,
-                        epsilon=self.config.binary_soft_f1_epsilon,
+                        gamma=self.config.binary_focal_gamma,
+                        alpha=self._binary_focal_alpha_effective,
+                        pos_weight=self._binary_pos_weight_tensor,
                     )
-                )
-            total_loss = task_loss + self._regularization_penalty(scale=regularization_scale)
-            if self.config.decision_usage_balance_weight > 0.0:
-                total_loss = total_loss + (
-                    regularization_scale
-                    * self.config.decision_usage_balance_weight
-                    * self._decision_usage_balance_penalty(batch_inputs, top_k_rules=top_k_rules)
-                )
-            if self.config.block_agreement_weight > 0.0:
-                total_loss = total_loss + (
-                    regularization_scale
-                    * self.config.block_agreement_weight
-                    * self._block_agreement_penalty(batch_inputs, top_k_rules=top_k_rules)
-                )
-            total_loss.backward()
-
-            if self.config.gradient_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_norm)
-
-            optimizer.step()
+                else:
+                    task_loss = self.loss_fn(predictions, aligned_targets)
+                if (
+                    self.config.task_type == "binary_classification"
+                    and self.config.binary_soft_f1_weight > 0.0
+                ):
+                    task_loss = task_loss + (
+                        self.config.binary_soft_f1_weight
+                        * self._binary_soft_f1_loss(
+                            predictions,
+                            aligned_targets,
+                            epsilon=self.config.binary_soft_f1_epsilon,
+                        )
+                    )
+                total_loss = task_loss + self._regularization_penalty(scale=regularization_scale)
+                if self.config.decision_usage_balance_weight > 0.0:
+                    if step_index % self.config.decision_usage_balance_every_n_steps == 0:
+                        total_loss = total_loss + (
+                            regularization_scale
+                            * self.config.decision_usage_balance_weight
+                            * self._decision_usage_balance_penalty(batch_inputs, top_k_rules=top_k_rules)
+                        )
+                if self.config.block_agreement_weight > 0.0:
+                    if step_index % self.config.block_agreement_every_n_steps == 0:
+                        total_loss = total_loss + (
+                            regularization_scale
+                            * self.config.block_agreement_weight
+                            * self._block_agreement_penalty(batch_inputs, top_k_rules=top_k_rules)
+                        )
+            if amp_enabled:
+                grad_scaler.scale(total_loss).backward()
+                if self.config.gradient_clip_norm is not None:
+                    grad_scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_norm)
+                grad_scaler.step(optimizer)
+                grad_scaler.update()
+            else:
+                total_loss.backward()
+                if self.config.gradient_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_norm)
+                optimizer.step()
 
             batch_size = batch_inputs.size(0)
             total_task_loss += task_loss.item() * batch_size
@@ -576,6 +605,28 @@ class FuzzyTrainer:
             loss=float(total_task_loss / max(total_items, 1)),
             metrics=metrics,
         )
+
+    def _resolve_amp_enabled(self, device: torch.device) -> bool:
+        if device.type != "cuda":
+            return False
+        if self.config.amp_enabled is None:
+            return True
+        return bool(self.config.amp_enabled)
+
+    def _resolve_autocast_context(self, amp_enabled: bool):
+        if not amp_enabled:
+            return nullcontext
+        if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+            return lambda: torch.amp.autocast(device_type="cuda", enabled=True)
+        return lambda: torch.cuda.amp.autocast(enabled=True)
+
+    def _build_grad_scaler(self, amp_enabled: bool):
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            try:
+                return torch.amp.GradScaler("cuda", enabled=amp_enabled)
+            except TypeError:
+                return torch.amp.GradScaler(enabled=amp_enabled)
+        return torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
     def _binary_soft_f1_loss(self, logits: Tensor, targets: Tensor, *, epsilon: float) -> Tensor:
         probabilities = torch.sigmoid(logits)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
 from torch import Tensor
 
 from .blocks import SugenoDecisionLayer, TransparentFuzzyBlock
@@ -36,6 +37,15 @@ class SampleExplanation:
     prediction: tuple[float, ...]
     stage_explanations: tuple[StageExplanation, ...]
     decision_explanation: BlockExplanation
+
+
+@dataclass(frozen=True)
+class ConceptExemplar:
+    stage_name: str
+    block_name: str
+    concept_name: str
+    top_sample_indices: tuple[int, ...]
+    top_scores: tuple[float, ...]
 
 
 def _extract_block_explanation(
@@ -150,3 +160,44 @@ def format_sample_explanations(
                 f"outputs={tuple(round(value, decimals) for value in rule.outputs)}"
             )
     return "\n".join(lines)
+
+
+def extract_concept_exemplars(
+    model: DeepFuzzyFeatureModel,
+    inputs: Tensor,
+    *,
+    top_k: int = 5,
+) -> tuple[ConceptExemplar, ...]:
+    if top_k <= 0:
+        raise ValueError("top_k must be positive.")
+    device = next(model.parameters(), torch.empty(0)).device
+    model.eval()
+    with torch.no_grad():
+        _, trace = model.forward_with_trace(inputs.to(device=device, dtype=torch.float32))
+    exemplars: list[ConceptExemplar] = []
+    for stage_trace in trace.stage_traces:
+        for block_trace in stage_trace.block_traces:
+            outputs = block_trace.outputs
+            concept_names = block_trace.output_names
+            concept_count = int(outputs.size(1))
+            for concept_index in range(concept_count):
+                scores = outputs[:, concept_index].abs()
+                k = min(top_k, int(scores.numel()))
+                if k <= 0:
+                    continue
+                values, indices = scores.topk(k=k)
+                concept_name = (
+                    concept_names[concept_index]
+                    if concept_index < len(concept_names)
+                    else f"concept_{concept_index}"
+                )
+                exemplars.append(
+                    ConceptExemplar(
+                        stage_name=stage_trace.stage_name,
+                        block_name=block_trace.block_name,
+                        concept_name=concept_name,
+                        top_sample_indices=tuple(int(index) for index in indices.tolist()),
+                        top_scores=tuple(float(value) for value in values.tolist()),
+                    )
+                )
+    return tuple(exemplars)

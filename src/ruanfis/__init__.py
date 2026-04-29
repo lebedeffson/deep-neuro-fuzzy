@@ -81,9 +81,11 @@ from .hierarchical_anfis import (
 )
 from .explanations import (
     BlockExplanation,
+    ConceptExemplar,
     RuleExplanation,
     SampleExplanation,
     StageExplanation,
+    extract_concept_exemplars,
     explain_samples,
     format_sample_explanations,
 )
@@ -179,6 +181,7 @@ __all__ = [
     "HiddenRulePathContribution",
     "LayerPruningReport",
     "BlockExplanation",
+    "ConceptExemplar",
     "PathRuleContribution",
     "PathSampleConceptFlow",
     "PruningReport",
@@ -230,6 +233,7 @@ __all__ = [
     "compute_metrics",
     "deserialize_model_config",
     "evaluate_trained_model",
+    "extract_concept_exemplars",
     "explain_samples",
     "count_rule_candidates",
     "export_model_config_report",

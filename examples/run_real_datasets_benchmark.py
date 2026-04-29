@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import json
+import math
 import platform
 import subprocess
 import sys
@@ -3698,6 +3700,8 @@ def _maybe_run_hard_sample_finetune(
         max_epochs=max(1, int(finetune_epochs)),
         patience=min(max(1, int(finetune_patience)), max(1, int(finetune_epochs))),
     )
+    # Safe rollback: keep hard-finetune only if validation monitor improves.
+    pre_finetune_state = copy.deepcopy(model.state_dict())
     progress_log(
         (
             "seed={seed} model={model}: hard_finetune source={source} hard={hard} "
@@ -3712,7 +3716,64 @@ def _maybe_run_hard_sample_finetune(
         )
     )
     trainer = FuzzyTrainer(model, finetune_config)
+    before_eval = trainer.evaluate(validation_inputs, validation_targets)
+    monitor_name = (
+        str(finetune_config.monitor_metric)
+        if finetune_config.monitor_metric is not None
+        else str(PRIMARY_METRIC.get(task_type, "loss"))
+    )
+    monitor_mode = (
+        str(finetune_config.monitor_mode).strip().lower()
+        if finetune_config.monitor_mode is not None
+        else ("min" if task_type == "regression" else "max")
+    )
+
+    def _extract_monitor(eval_result) -> float:
+        if monitor_name == "loss":
+            return float(eval_result.loss)
+        if monitor_name in eval_result.metrics:
+            return float(eval_result.metrics[monitor_name])
+        return float(eval_result.loss)
+
+    before_value = _extract_monitor(before_eval)
     trainer.fit(augmented_inputs, augmented_targets, validation_inputs, validation_targets)
+    after_eval = trainer.evaluate(validation_inputs, validation_targets)
+    after_value = _extract_monitor(after_eval)
+    min_delta = float(finetune_config.min_delta)
+    improved = (
+        after_value < (before_value - min_delta)
+        if monitor_mode == "min"
+        else after_value > (before_value + min_delta)
+    )
+    if not improved:
+        model.load_state_dict(pre_finetune_state)
+        progress_log(
+            (
+                "seed={seed} model={model}: hard_finetune rollback "
+                "(monitor={name}, mode={mode}, before={before:.6f}, after={after:.6f})"
+            ).format(
+                seed=seed,
+                model=model_name,
+                name=monitor_name,
+                mode=monitor_mode,
+                before=before_value,
+                after=after_value,
+            )
+        )
+    else:
+        progress_log(
+            (
+                "seed={seed} model={model}: hard_finetune keep "
+                "(monitor={name}, mode={mode}, before={before:.6f}, after={after:.6f})"
+            ).format(
+                seed=seed,
+                model=model_name,
+                name=monitor_name,
+                mode=monitor_mode,
+                before=before_value,
+                after=after_value,
+            )
+        )
 
 
 def _select_bootstrap_subset(
@@ -3746,6 +3807,7 @@ def run_single_seed_dataset_benchmark(
     fuzzy_learning_rate: float,
     dffl_learning_rate: float,
     dffl_profile_name: str,
+    dffl_concept_expert_labels: Mapping[str, float] | None,
     dffl_dataset_overrides: Mapping[str, Mapping[str, Any]] | None,
     feature_geometry: str,
     binary_heavy_grouping_mode: str,
@@ -3922,6 +3984,13 @@ def run_single_seed_dataset_benchmark(
         else {}
     )
     regression_residual_head_enabled = bool(spec.task_type == "regression" and split.n_samples > 100)
+    amp_enabled = bool(
+        torch.cuda.is_available()
+        and (
+            (device is not None and str(device).strip().lower().startswith("cuda"))
+            or (device is None)
+        )
+    )
 
     trained_fuzzy_models: dict[str, torch.nn.Module] = {}
     model_top_k_rules: dict[str, int | None] = {}
@@ -4267,6 +4336,10 @@ def run_single_seed_dataset_benchmark(
             intergroup_interaction_share=dffl_intergroup_share,
             n_bridge_pairs=len(dffl_bridge_pairs),
         )
+        dffl_regularizer_cadence = 1
+        if int(split.input_dim) >= 40 or int(split.n_samples) >= 100_000:
+            # Reduce overhead of expensive correlation/usage regularizers on large-scale runs.
+            dffl_regularizer_cadence = 4
         dffl_training_config_base = TrainingConfig(
             task_type=spec.task_type,
             max_epochs=max_epochs,
@@ -4274,6 +4347,7 @@ def run_single_seed_dataset_benchmark(
             patience=min(patience, max_epochs),
             batch_size=batch_size,
             shuffle=dffl_shuffle_effective,
+            amp_enabled=amp_enabled,
             classification_threshold=classification_threshold,
             monitor_metric="f1" if spec.task_type == "binary_classification" else None,
             monitor_mode="max" if spec.task_type == "binary_classification" else None,
@@ -4306,8 +4380,10 @@ def run_single_seed_dataset_benchmark(
             rule_sparsity_weight=dffl_profile.rule_sparsity_weight,
             rule_length_weight=dffl_profile.rule_length_weight,
             decision_usage_balance_weight=dffl_profile.decision_usage_balance_weight,
+            decision_usage_balance_every_n_steps=dffl_regularizer_cadence,
             block_gate_l1_weight=dffl_profile.block_gate_l1_weight,
             block_agreement_weight=dffl_block_agreement_weight,
+            block_agreement_every_n_steps=dffl_regularizer_cadence,
             block_agreement_target_corr=dffl_block_agreement_target_corr,
             block_agreement_stage_limit=dffl_profile.block_agreement_stage_limit,
             regularization_warmup_epochs=max(1, max_epochs // 3),
@@ -4355,6 +4431,7 @@ def run_single_seed_dataset_benchmark(
         best_val_score = float("-inf")
         best_restart = 0
         best_prediction_postprocessor: Callable[[torch.Tensor], torch.Tensor] | None = None
+        best_training_config: TrainingConfig | None = None
         best_focal_spec = "n/a"
         best_score_label = "validation_score"
         for focal_idx, candidate_training_config in enumerate(dffl_training_candidates):
@@ -4494,9 +4571,10 @@ def run_single_seed_dataset_benchmark(
                     best_model = candidate_model
                     best_restart = restart_idx + 1
                     best_prediction_postprocessor = candidate_postprocessor
+                    best_training_config = candidate_training_config
                     best_focal_spec = focal_spec
                     best_score_label = score_label
-        if best_model is None:
+        if best_model is None or best_training_config is None:
             raise RuntimeError("DFFL training did not produce a valid model.")
         if restarts_effective > 1 or len(dffl_training_candidates) > 1:
             progress_log(
@@ -4512,6 +4590,24 @@ def run_single_seed_dataset_benchmark(
                     score=best_val_score,
                 )
             )
+        _maybe_run_hard_sample_finetune(
+            enabled=fuzzy_hard_sample_training and "ruanfis_refined_deep" in hard_sample_enabled_models,
+            model_name="ruanfis_refined_deep",
+            model=best_model,
+            task_type=spec.task_type,
+            train_inputs=train_inputs,
+            train_targets=dffl_train_targets,
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            base_training_config=best_training_config,
+            source=fuzzy_hard_sample_source,
+            hard_fraction=fuzzy_hard_sample_fraction,
+            hard_multiplier=fuzzy_hard_sample_multiplier,
+            finetune_epochs=fuzzy_hard_sample_finetune_epochs,
+            finetune_patience=fuzzy_hard_sample_finetune_patience,
+            baseline_hard_indices=baseline_hard_indices,
+            seed=seed,
+        )
         trained_fuzzy_models["ruanfis_refined_deep"] = best_model
         model_top_k_rules["ruanfis_refined_deep"] = dffl_profile.top_k_rules
         model_prediction_postprocessors["ruanfis_refined_deep"] = best_prediction_postprocessor
@@ -4536,6 +4632,7 @@ def run_single_seed_dataset_benchmark(
             patience=min(patience, max_epochs),
             batch_size=batch_size,
             shuffle=True,
+            amp_enabled=amp_enabled,
             classification_threshold=classification_threshold,
             binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
             binary_loss_name=fuzzy_binary_loss_name,
@@ -4635,6 +4732,7 @@ def run_single_seed_dataset_benchmark(
             patience=min(patience, max_epochs),
             batch_size=batch_size,
             shuffle=True,
+            amp_enabled=amp_enabled,
             classification_threshold=classification_threshold,
             binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
             binary_loss_name=fuzzy_binary_loss_name,
@@ -4704,6 +4802,7 @@ def run_single_seed_dataset_benchmark(
             patience=min(patience, max_epochs),
             batch_size=batch_size,
             shuffle=True,
+            amp_enabled=amp_enabled,
             classification_threshold=classification_threshold,
             binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
             binary_loss_name=fuzzy_binary_loss_name,
@@ -4817,6 +4916,9 @@ def run_single_seed_dataset_benchmark(
             rule_probability_threshold=rule_probability_threshold,
             top_k_rules=model_top_k_rules.get(model_name),
             prediction_postprocessor=model_prediction_postprocessors.get(model_name),
+            dffl_concept_expert_labels=(
+                dffl_concept_expert_labels if model_name == "ruanfis_refined_deep" else None
+            ),
         )
         for model_name in FUZZY_MODEL_NAMES
         if model_name in trained_fuzzy_models
@@ -5280,7 +5382,7 @@ def build_reproducibility_manifest_payload(
 ) -> dict[str, object]:
     seed_selection_policy = "deterministic_pool" if int(args.seed_count) > 0 else "explicit_argument"
     return {
-        "generated_utc": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "generated_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "script": "examples/run_real_datasets_benchmark.py",
         "runtime_environment": collect_runtime_environment(requested_device=args.device),
         "protocol": {
@@ -5841,7 +5943,7 @@ def main() -> None:
     parser.add_argument(
         "--fuzzy-hard-sample-models",
         type=str,
-        default="stacked,hierarchical",
+        default="stacked,hierarchical,dffl",
         help=(
             "Comma-separated fuzzy models for hard-sample finetune "
             "(aliases supported). Use 'none' to disable."
@@ -5923,6 +6025,15 @@ def main() -> None:
         help="Train DFFL in one-phase mode (bootstrap + single joint fit) without stage-wise refinement.",
     )
     parser.add_argument(
+        "--dffl-concept-expert-labels",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON mapping 'stage/block/concept' -> score in [0,1] "
+            "for expert semantic validation metrics."
+        ),
+    )
+    parser.add_argument(
         "--dffl-fast-gpu",
         action="store_true",
         help="Apply speed-oriented DFFL caps to reduce CPU-heavy rule/prototype generation in GPU runs.",
@@ -5965,6 +6076,24 @@ def main() -> None:
     args.feature_geometry = _validate_feature_geometry(args.feature_geometry)
     args.binary_heavy_grouping = _validate_binary_heavy_grouping_mode(args.binary_heavy_grouping)
     dffl_dataset_overrides = parse_dffl_dataset_overrides(args.dffl_dataset_overrides)
+    dffl_concept_expert_labels: dict[str, float] | None = None
+    if args.dffl_concept_expert_labels is not None:
+        payload = json.loads(args.dffl_concept_expert_labels.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("--dffl-concept-expert-labels must point to a JSON object.")
+        parsed_labels: dict[str, float] = {}
+        for raw_key, raw_value in payload.items():
+            key = str(raw_key).strip()
+            if not key:
+                continue
+            value = float(raw_value)
+            if (not math.isfinite(value)) or value < 0.0 or value > 1.0:
+                raise ValueError(
+                    "--dffl-concept-expert-labels scores must lie in [0,1]. "
+                    f"Invalid value for '{key}': {value}"
+                )
+            parsed_labels[key] = value
+        dffl_concept_expert_labels = parsed_labels or None
 
     dataset_suite = parse_dataset_suite(args.dataset_suite)
     if dataset_suite != "custom":
@@ -6069,6 +6198,7 @@ def main() -> None:
                 fuzzy_learning_rate=args.fuzzy_learning_rate,
                 dffl_learning_rate=args.dffl_learning_rate,
                 dffl_profile_name=args.dffl_profile,
+                dffl_concept_expert_labels=dffl_concept_expert_labels,
                 dffl_dataset_overrides=dffl_dataset_overrides,
                 feature_geometry=args.feature_geometry,
                 binary_heavy_grouping_mode=args.binary_heavy_grouping,
