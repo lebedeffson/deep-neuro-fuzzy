@@ -1,114 +1,41 @@
-# Current Experiment Summary
+# Paper-Facing Artifacts
 
-This directory keeps one compact final summary.
-Local raw bundles are stored under `runs/`.
-Additional Q1-focused support tables (capacity-matched, tau-sensitivity, runtime, hyperparams) are in `article_support_tables_2026-04-27.md`.
+This directory is for compact, curated result summaries used by the manuscript.
+Raw experiment bundles live under `runs/` and are intentionally ignored by git.
 
-## Two Large-Scale Datasets
+## Current Manuscript
 
-We use two large-scale tabular datasets:
+- Canonical LaTeX: `main(2).tex`
+- Current focus: Routed Kolmogorov--Arnold Fuzzy Networks (Routed KAFN)
+- Current KAFN figures:
+  - `docs/figures/fig5_kafn_architecture.png`
+  - `docs/figures/fig6_kafn_explanation_flow.png`
+  - generator: `docs/figures/generate_kafn_figures.py`
 
-1. `covtype_binary_full` (581,012 x 54) as the **main discriminative benchmark**.
-2. `kddcup99_binary_full` (4,898,431 x ~122 after preprocessing) as a **feasibility/scalability check**.
+## Current KAFN Run Sources
 
-## Covtype Full (Main Benchmark)
+The main KAFN manuscript numbers were taken from local raw bundles:
 
-| Model | F1 |
-| --- | ---: |
-| Logistic Regression | 0.7551 |
-| shallow fuzzy | 0.7700 |
-| DFFL (fast profile, 3 seeds) | 0.8361 +/- 0.0031 |
-| hist gradient boosting | 0.8321 |
-| MLP | 0.8591 |
-| hierarchical fuzzy | 0.9033 |
-| stacked fuzzy (tuned, 3 seeds) | **0.9466 +/- 0.0015** |
-| Extra Trees | 0.9543 |
-| Random Forest | 0.9560 |
+- `runs/kafn_paper_all_3s_2026-04-30`
+- `runs/cov20k_deep_kanfis_teacher_grouped_q12_fan20_r936_3s_2026-04-30`
+- `runs/cov20k_kaanifs_tg_q12_f20_r936_binaryterms_3s_2026-04-30`
+- `runs/cov20k_kaanifs_proj_p8w4_fixed_3s_2026-04-30`
+- `runs/cov20k_fuzzy4_fixcheck_3s_2026-04-29`
+- `runs/cov20k_kaanifs_binary_q12_vs_sklearn_3s_2026-04-30`
 
-Key promoted stacked metrics on Covtype full:
-- `F1 = 0.9466 +/- 0.0015`
-- `ROC-AUC = 0.9895 +/- 0.0005`
-- `PR-AUC = 0.9886 +/- 0.0005`
-- `active rules = 77.33 +/- 7.41` (of 150 total)
+These directories are not committed because they are raw outputs. Keep the exact
+run names in manuscript text or notes when a table depends on them.
 
-Main claim supported by this dataset:
-- stacked deep ANFIS is clearly stronger than other fuzzy/neural/linear baselines,
-- but still below Random Forest and Extra Trees.
+## Historical Support Tables
 
-Note:
-- DFFL tuned single-seed check reached `0.8413`, but paper-facing value is the three-seed run.
+- `article_revision_results_2026-04-27.md`
+- `article_support_tables_2026-04-27.md`
+- `finalization_state_2026-04-27.md`
 
-## KDDCup99 Full (Scalability Check)
+These files document the previous DFFL/stacked/hierarchical revision state and
+remain useful as traceability notes. They are not the canonical KAFN manuscript.
 
-| Model | F1 |
-| --- | ---: |
-| shallow fuzzy | 0.9993 |
-| stacked fuzzy | 0.9999 |
-| hierarchical fuzzy | 0.9998 |
-| Logistic Regression | 0.9991 |
-| MLP | 0.9999 |
-| RF / ExtraTrees / HGB | ~1.0000 |
+## Hygiene
 
-Interpretation:
-- KDD confirms that our pipeline and fuzzy models scale to multi-million rows.
-- KDD is too easy/saturated for strong competitive quality claims.
-
-## Paper Wording
-
-Recommended wording:
-
-> We evaluate on two large-scale tabular datasets: Covtype full as the main discriminative benchmark, and KDDCup99 full as a large-scale feasibility/scalability check.
-
-## Reproducibility Commands
-
-Covtype full (promoted stacked run):
-
-```bash
-python examples/run_real_datasets_benchmark.py \
-  --datasets covtype_binary_full \
-  --seeds 19,23,29 \
-  --gpu-only \
-  --fuzzy-models stacked \
-  --max-epochs 40 \
-  --patience 8 \
-  --batch-size 2048 \
-  --tune-fuzzy-threshold \
-  --tune-fuzzy-threshold-calibrated \
-  --stacked-width-scale 3.0 \
-  --stacked-rule-scale 3.0 \
-  --stacked-final-skip-inputs 32 \
-  --stacked-final-skip-mode target_corr_diverse \
-  --stacked-final-skip-gates \
-  --stacked-final-skip-gate-l1-weight 0.0001 \
-  --fuzzy-distill-weight 0.15 \
-  --fuzzy-distill-models stacked \
-  --fuzzy-distill-teacher-trees 600 \
-  --fuzzy-hard-sample-training \
-  --fuzzy-hard-sample-models stacked \
-  --fuzzy-hard-sample-source baseline \
-  --fuzzy-hard-sample-fraction 0.25 \
-  --fuzzy-hard-sample-multiplier 2 \
-  --fuzzy-hard-sample-finetune-epochs 12 \
-  --fuzzy-hard-sample-finetune-patience 3 \
-  --fuzzy-hard-sample-teacher-trees 400 \
-  --output-dir runs/covtypefull_stacked_w30_r30_s32_d015_t600_hs25_3s_2026-04-26
-```
-
-Q1-style larger suite (deterministic 10 seeds, fuzzy-only):
-
-```bash
-python examples/run_real_datasets_benchmark.py \
-  --dataset-suite q1_large \
-  --seed-count 10 \
-  --gpu-only \
-  --fuzzy-models all \
-  --dffl-profile quality_auto \
-  --tune-fuzzy-threshold \
-  --rule-probability-threshold 0.5 \
-  --output-dir runs/q1_large_all_models_10s
-```
-
-Notes:
-- `--dataset-suite` provides fixed dataset bundles (`paper_main`, `paper_extended`, `paper_all`, `q1_large`, `q1_full`).
-- `--seed-count N` uses deterministic internal seed pool (good for 10-30 seed stability runs).
-- `--rule-probability-threshold` controls active-rule/stability metric threshold and is stored in reproducibility manifest.
+Do not place raw logs, downloaded datasets, or whole benchmark directories here.
+Only compact summaries that are directly referenced by the paper should be kept.

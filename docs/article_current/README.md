@@ -1,21 +1,14 @@
-# Article Current Bundle
+# Legacy Article Bundle
 
-Single place for the current article version.
+This directory contains an older article bundle from the pre-KAFN manuscript
+workflow. It is kept only for historical comparison.
 
-## Files
-- `main.tex` — current manuscript text (synced from project root `main(2).tex`)
-- `references.bib` — bibliography used by `main.tex`
-- `figures/` — current paper figures (`fig1`..`fig4`)
-- `article_metrics.json` — canonical metrics used to regenerate figures
-- `references_raw_input.bib` — raw bibliography file provided for merge/check
+The current canonical manuscript is:
 
-## Regenerate figures
-```bash
-python docs/figures/generate_iiti26_figures.py \
-  --metrics-json docs/article_current/article_metrics.json \
-  --out-dir docs/article_current/figures
-```
+- `main(2).tex` in the repository root
+- bibliography: `docs/iiti26_references_skeleton_en.bib`
+- current KAFN figures: `docs/figures/fig5_kafn_architecture.png` and
+  `docs/figures/fig6_kafn_explanation_flow.png`
 
-## Notes
-- `main.tex` in this folder is intended for article-only workflow.
-- If root `main(2).tex` changes, re-copy to keep this bundle in sync.
+Do not add another manuscript source here unless it is explicitly synchronized
+with the root LaTeX manuscript.

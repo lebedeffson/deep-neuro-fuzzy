@@ -1,33 +1,43 @@
 # ruanfis
 
-`ruanfis` is a research-oriented Python library for deep neuro-fuzzy modeling with
-layer-wise interpretability.
+`ruanfis` is a research codebase for interpretable neuro-fuzzy models in PyTorch.
+The current paper-facing branch focuses on **Routed Kolmogorov--Arnold Fuzzy
+Networks (Routed KAFN)** and compares them with shallow fuzzy, stacked ANFIS,
+hierarchical ANFIS, and DFFL baselines.
 
-The project currently focuses on **deep fuzzy feature learning** rather than a fully
-general stacked deep ANFIS. Hidden fuzzy stages build interpretable concept
-representations, while the final layer performs first-order Sugeno inference.
-The codebase also includes explicit **Stacked ANFIS** and **Hierarchical ANFIS**
-baselines for controlled architecture comparisons.
+## Current Paper
 
-## Current scope
+Canonical manuscript:
 
-- transparent fuzzy hidden blocks with interpretable concept outputs;
-- explicit stacked and hierarchical ANFIS baseline builders;
-- hierarchical model builders that structurally control rule growth;
-- prototype-based and stage-wise rule initialization;
-- stage-wise pretraining and end-to-end fine-tuning in PyTorch;
-- local and global explainability utilities;
-- serialization, benchmarking, and runnable examples.
+- `main(2).tex`
+- bibliography: `docs/iiti26_references_skeleton_en.bib`
+- figures: `docs/figures/`
 
-## Why this project exists
+Routed KAFN combines:
 
-Classical ANFIS models are interpretable but shallow. Modern deep models are
-expressive but often opaque. `ruanfis` explores the middle ground:
+- teacher-guided feature routing;
+- additive Kolmogorov--Arnold-style fuzzy concept layers;
+- binary-aware fuzzy terms for one-hot inputs;
+- fixed sparse projection-pursuit channels;
+- explicit rule-count and active-rule stability reporting.
 
-`x -> fuzzy concepts -> deeper fuzzy concepts -> prediction`
+The main paper claim is intentionally conservative: KAFN is not presented as a
+universal accuracy winner. Its strongest validated point is the
+quality--complexity--stability trade-off on `covtype_binary_20000`, where it is
+close to stacked fuzzy in F1 while giving much more stable active-rule structure.
 
-The implementation is designed to keep hidden representations inspectable while
-avoiding the flat combinatorial explosion of a single global rule base.
+## Repository Layout
+
+```text
+src/ruanfis/          library code
+examples/             benchmark and experiment entrypoints
+tests/                automated tests
+docs/                 article materials, figures, notes
+docs/artifacts/       compact paper-facing result summaries
+runs/                 local raw experiment outputs (ignored by git)
+artifacts/            local scratch benchmark outputs (ignored by git)
+data/                 local datasets/cache (ignored by git)
+```
 
 ## Installation
 
@@ -37,116 +47,37 @@ python -m pip install -e .[dev]
 
 Minimum supported Python version: `3.11`.
 
-## Quick start
-
-```python
-import torch
-
-from ruanfis import (
-    BootstrapConfig,
-    DecisionLayerConfig,
-    FuzzyVariable,
-    GaussianMembership,
-    HierarchicalModelConfig,
-    StageConfig,
-    StagewisePretrainingConfig,
-    TransparentBlockConfig,
-    build_stagewise_pretrained_hierarchical_model,
-)
-
-
-def var3(name: str) -> FuzzyVariable:
-    return FuzzyVariable(
-        name,
-        GaussianMembership([0.2, 0.5, 0.8], [0.18, 0.18, 0.18], term_names=["low", "mid", "high"]),
-    )
-
-
-def var2(name: str) -> FuzzyVariable:
-    return FuzzyVariable(
-        name,
-        GaussianMembership([0.25, 0.75], [0.2, 0.2], term_names=["low", "high"]),
-    )
-
-
-config = HierarchicalModelConfig(
-    input_dim=4,
-    stages=(
-        StageConfig(
-            name="stage_1",
-            blocks=(
-                TransparentBlockConfig(
-                    name="left_block",
-                    input_indices=(0, 1),
-                    variables=(var3("x0"), var3("x1")),
-                    n_concepts=2,
-                    concept_names=("left_signal", "left_bias"),
-                    max_rule_arity=2,
-                    max_rules=4,
-                    rule_generation_mode="prototype",
-                ),
-                TransparentBlockConfig(
-                    name="right_block",
-                    input_indices=(2, 3),
-                    variables=(var3("x2"), var3("x3")),
-                    n_concepts=2,
-                    concept_names=("right_signal", "right_bias"),
-                    max_rule_arity=2,
-                    max_rules=4,
-                    rule_generation_mode="prototype",
-                ),
-            ),
-        ),
-    ),
-    decision_layer=DecisionLayerConfig(
-        name="decision",
-        variables=(var2("left_signal"), var2("left_bias"), var2("right_signal"), var2("right_bias")),
-        output_dim=1,
-        output_names=("target",),
-        max_rule_arity=2,
-        max_rules=8,
-    ),
-)
-
-inputs = torch.rand(256, 4)
-targets = (
-    0.45 * torch.sin(torch.pi * inputs[:, 0:1] * inputs[:, 1:2])
-    + 0.30 * (inputs[:, 2:3] * inputs[:, 3:4])
-    + 0.15 * inputs[:, 0:1]
-)
-
-model = build_stagewise_pretrained_hierarchical_model(
-    config,
-    sample_inputs=inputs,
-    sample_targets=targets,
-    bootstrap_config=BootstrapConfig(decision_task_type="regression"),
-    pretraining_config=StagewisePretrainingConfig(task_type="regression"),
-)
-```
-
-## Repository layout
-
-```text
-src/ruanfis/         library code
-tests/               automated tests
-examples/            runnable demos and benchmark scripts
-docs/                mathematical notes and project documentation
-```
-
-## Paper materials
-
-For the current article package and reproducibility artifacts:
-
-- [docs/repository_materials_index_ru.md](docs/repository_materials_index_ru.md)
-- [docs/artifacts/README.md](docs/artifacts/README.md)
-
-## Examples
+## Important Entrypoints
 
 ```bash
-python examples/train_xor_with_rule_report.py
-python examples/train_hierarchical_regression.py
+python examples/run_real_datasets_benchmark.py --help
 python examples/run_regression_benchmark.py
-python examples/run_real_datasets_benchmark.py --datasets diabetes,breast_cancer,wine_binary --dffl-profile quality_auto
+python examples/generate_article_stats_report.py
+```
+
+KAFN-focused benchmark example:
+
+```bash
+python examples/run_real_datasets_benchmark.py \
+  --dataset-suite paper_all \
+  --seeds 19,23,29 \
+  --fuzzy-models ruanfis_kanfis \
+  --gpu-only \
+  --kanfis-depth 2 \
+  --kanfis-superposition-terms 12 \
+  --kanfis-concept-fan-in 20 \
+  --kanfis-routing grouped \
+  --kanfis-feature-order teacher_importance \
+  --kanfis-projection-count 8 \
+  --kanfis-projection-width 4 \
+  --kanfis-projection-mode fixed_covtype \
+  --kanfis-prune-rules 936 \
+  --fuzzy-learning-rate 0.020 \
+  --fuzzy-distill-weight 0.15 \
+  --fuzzy-distill-models kanfis \
+  --tune-fuzzy-threshold \
+  --tune-fuzzy-threshold-calibrated \
+  --output-dir runs/kafn_paper_all_3s
 ```
 
 ## Testing
@@ -155,12 +86,25 @@ python examples/run_real_datasets_benchmark.py --datasets diabetes,breast_cancer
 pytest -q
 ```
 
-## Research status
+For the run-oriented environment used in this repo:
 
-The implementation is already fully tested and runnable, but it should still be treated
-as an active research codebase. The main mathematical claim at the moment is documented
-in [docs/deep_fuzzy_feature_learning.md](docs/deep_fuzzy_feature_learning.md).
+```bash
+.venv_run/bin/python -m pytest -q
+```
+
+## Artifact Policy
+
+Raw runs are intentionally not committed. Keep only compact summaries and
+paper-facing artifacts under `docs/artifacts/` or `docs/figures/`.
+
+Do not commit:
+
+- `runs/`
+- `artifacts/`
+- `data/`
+- downloaded datasets such as `susy(2).zip`
+- LaTeX build files (`*.aux`, `*.bbl`, `*.log`, ...)
 
 ## License
 
-This project is distributed under the MIT License. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
