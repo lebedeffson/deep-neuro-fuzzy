@@ -11,11 +11,11 @@
 \usepackage{float}
 \graphicspath{{docs/figures/}}
 
-\hypersetup{hidelinks}
+\hypersetup{hidelinks,hypertexnames=false}
 
 \begin{document}
 
-\title{Routed Kolmogorov--Arnold Fuzzy Networks for Stable Interpretable Classification\thanks{The research was carried out within the state assignment of Ministry of Science and Higher Education of the Russian Federation (theme No. 124112200072-2).}}
+\title{Routed Kolmogorov--Arnold Fuzzy Networks for Stable Interpretable Prediction\thanks{The research was carried out within the state assignment of Ministry of Science and Higher Education of the Russian Federation (theme No. 124112200072-2).}}
 \titlerunning{Routed KA Fuzzy Networks}
 
 \author{
@@ -45,7 +45,7 @@ This paper studies how to increase the predictive capacity of neuro-fuzzy models
 
 Routed KAFN replaces a combinatorial multidimensional rule base with a deep additive fuzzy superposition. The first stage constructs concept variables as sums of one-dimensional fuzzy predicates selected by teacher-guided routing; the second stage applies another fuzzy superposition over these concepts. Binary and one-hot variables use only absent/present terms, while continuous variables use low/medium/high terms. A fixed projection-pursuit extension adds a small number of transparent sparse channels while preserving a stable rule topology.
 
-On the \textit{covtype\_binary\_20000} benchmark, the best routed KA configuration reaches F1 $=0.8174\pm0.0101$ with 936 active rules and active-rule Jaccard $=0.9167$. It is close to the strongest stacked fuzzy baseline (F1 $=0.8222\pm0.0074$) and stronger than the histogram-gradient-boosting baseline used in the same focused block, while providing a much more reproducible rule structure than the stacked fuzzy model. The results support a quality--complexity--stability view of deep neuro-fuzzy design: the proposed KAFN is not a universal accuracy winner, but it gives a strong operating point where predictive quality and stable interpretability are jointly optimized.
+On the \textit{covtype\_binary\_20000} benchmark, the best routed KA configuration reaches F1 $=0.8174\pm0.0101$ with 936 active routed predicates and active-rule Jaccard $=0.9167$. It is close to the strongest stacked fuzzy baseline (F1 $=0.8222\pm0.0074$) and reaches the histogram-gradient-boosting level with slightly higher mean F1 in the same focused block, while providing a much more reproducible rule structure than the stacked fuzzy model. The results support a quality--complexity--stability view of deep neuro-fuzzy design: the proposed KAFN is not a universal accuracy winner, but it gives a strong operating point where predictive quality and stable interpretability are jointly optimized.
 \keywords{Kolmogorov--Arnold networks \and neuro-fuzzy systems \and interpretable machine learning \and fuzzy rules \and structural stability}
 \end{abstract}
 
@@ -63,7 +63,7 @@ The contribution of this study is a unified fuzzy-block framework for analyzing 
 
 The main proposed model, Routed KAFN, uses the Kolmogorov--Arnold superposition principle as an architectural guide: multidimensional rules are replaced by sums of one-dimensional fuzzy predicates and a second fuzzy superposition over learned concept variables~\cite{kolmogorov1957superposition,arnold1957functions}. Teacher-guided routing fixes which predicates enter each concept, binary-aware terms remove redundant medium states for one-hot variables, and fixed sparse projection channels add limited interaction capacity without returning to a full combinatorial rule base.
 
-All architectures are evaluated under matched preprocessing and optimization settings. This makes the comparison architectural rather than a set of fragmented model-specific experiments. The evaluation protocol combines predictive quality, rule-base complexity, and reproducibility of internal rule activation, and it is complemented by a case-level internal trace. The central result is a controlled quality--complexity--stability comparison that identifies Routed KAFN as the strongest stability-oriented fuzzy model in the focused Covtype setting.
+The architectures are evaluated under a shared data protocol, with family-specific settings reported in the reproducibility artifacts. This makes the comparison controlled while preserving the settings required by each architecture. The evaluation protocol combines predictive quality, rule-base complexity, and reproducibility of internal rule activation, and it is complemented by a case-level internal trace. The central result is a controlled quality--complexity--stability comparison that identifies Routed KAFN as a strong stability-oriented fuzzy operating point in the focused Covtype setting.
 
 \section{Related Work}
 
@@ -77,9 +77,9 @@ Outside the neuro-fuzzy line, architecturally interpretable deep learning has de
 
 These studies mark a shift from explaining a finished black-box model toward designing models whose internal structure supports interpretation during inference. This distinction is essential here. Post hoc methods such as LIME and SHAP can explain individual predictions of a trained model, but they do not require the predictor itself to contain stable or semantically organized internal representations~\cite{ribeiro2016lime,lundberg2017shap,rudin2019stop}.
 
-The Kolmogorov--Arnold superposition theorem gives another useful architectural viewpoint: a multivariate continuous function can be represented through sums and superpositions of univariate functions~\cite{kolmogorov1957superposition,arnold1957functions}. Recent Kolmogorov--Arnold Networks (KANs) use this principle to replace fixed node activations with learnable edge functions~\cite{liu2024kan}. In this paper we do not reproduce a spline-based KAN. Instead, we build a fuzzy counterpart: routed sums of one-dimensional membership predicates are combined into concept functions and then into a final fuzzy decision layer.
+The Kolmogorov--Arnold superposition theorem gives another useful architectural viewpoint: a multivariate continuous function can be represented through sums and superpositions of univariate functions~\cite{kolmogorov1957superposition,arnold1957functions}. Recent KANs use this principle to replace fixed node activations with learnable edge functions~\cite{liu2024kan}. In this paper we do not reproduce a spline-based KAN. Instead, we build a fuzzy counterpart: routed sums of one-dimensional membership predicates are combined into concept functions and then into a transparent decision layer.
 
-The remaining gap lies between these research lines. Neuro-fuzzy models preserve explicit rule-based reasoning, but they face structural growth when depth and high-dimensional inputs are introduced. Architecturally interpretable deep models provide concepts, prototypes, or self-explaining components, but fuzzy inference is not their core reasoning mechanism~\cite{zeng2019deep,alvarez2018self,koh2020concept,chen2019looks,chen2020concept}. This gap motivates the controlled comparison presented in this paper: fuzzy-block architectures are built on a shared fuzzy inference mechanism and compared as different ways of increasing depth while preserving structural interpretability, with Routed KAFN developed as the final stability-oriented architecture.
+The remaining gap lies between these research lines. Neuro-fuzzy models preserve explicit rule-based reasoning, but they face structural growth when depth and high-dimensional inputs are introduced. Architecturally interpretable deep models provide concepts, prototypes, or self-explaining components, but fuzzy inference is not their core reasoning mechanism~\cite{zeng2019deep,alvarez2018self,koh2020concept,chen2019looks,chen2020concept}. This gap motivates the controlled comparison presented in this paper: fuzzy-block architectures are built on a shared fuzzy inference mechanism and compared as different ways of increasing depth while preserving structural interpretability, with Routed KAFN developed as the main stability-oriented architecture of the study.
 
 \section{Methodology}
 
@@ -213,7 +213,7 @@ c_k^{(2)} =
 \beta_{kqt}\,\nu_{qt}\!\left(c_q^{(1)}\right),
 \quad k=1,\dots,K,
 \]
-where $\mathcal{S}_k$ is a fixed concept route and $\nu_{qt}$ are fuzzy terms over first-stage concepts. The final decision is computed from the second-stage concepts by a sparse Sugeno-style decision map,
+where $\mathcal{S}_k$ is a fixed concept route and $\nu_{qt}$ are fuzzy terms over first-stage concepts. In the pure two-layer form, the routed concept vector is then passed to a sparse affine decision map,
 \[
 \hat{y}_{\mathrm{KA}} =
 D_{\mathrm{KA}}\!\left(c_1^{(2)},\dots,c_K^{(2)}\right).
@@ -226,7 +226,7 @@ To add limited interaction capacity, we use fixed projection-pursuit fuzzy chann
 \sum_{p\in \mathcal{P}_m} \gamma_{mp}x_p,
 \quad |\mathcal{P}_m|\le 4,
 \]
-followed by low/medium/high fuzzy terms over $\pi_m(x)$. These channels are reported as readable rules such as \texttt{pursuit\_m(Elevation, Slope, ... ) IS HIGH}. In the final configuration, the projection routes are fixed before training, so the structural topology remains reproducible across seeds.
+followed by low/medium/high fuzzy terms over $\pi_m(x)$. These channels are reported as named projection predicates. In the final configuration, the projection routes are fixed before training, so the structural topology remains reproducible across seeds.
 
 The final decision input concatenates first-stage concepts, projection channels, second-stage concepts, and optional transparent skip features:
 \[
@@ -255,6 +255,8 @@ N_{\mathrm{rules}} =
 \]
 where $P$ is the number of projection-pursuit channels. Active rules are selected by the same threshold rule as the other fuzzy models, $\rho_r\ge\tau_{\mathrm{act}}$, after optional pruning to a fixed budget. This definition makes KAFN directly comparable to the other architectures in rule count and active-rule Jaccard.
 
+Although the KAFN rule count is larger than in compact ANFIS-style baselines, these rules are routed one-dimensional or fixed projection predicates rather than high-order multidimensional antecedent products. Therefore, their structural cost should be interpreted together with topology stability and feature-level readability.
+
 \begin{table}[H]
 \centering
 \caption{Final Routed KAFN configuration used in the focused Covtype experiment.}
@@ -273,24 +275,24 @@ Continuous terms & LOW, MEDIUM, HIGH \\
 Binary/one-hot terms & absent, present \\
 Projection channels & 8 fixed sparse projections \\
 Projection width & up to 4 features per projection \\
-Rule pruning budget & 936 active rules in the final projection variant \\
+Rule pruning budget & 936 active routed predicates in the final projection variant \\
 Thresholding & validation-tuned calibrated classification threshold \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The design is intended for tabular tasks where a user needs more than a class probability. A local explanation decomposes the output into top concept contributions, top one-dimensional fuzzy predicates, and optional projection-channel predicates. A global explanation reports the stable rule dictionary, including original feature names and term labels. Therefore the final model is not only a classifier, but also a reproducible fuzzy rule generator with fixed routing topology.
+The design is intended for tabular tasks where a user needs more than a class probability or a point prediction. A local explanation decomposes the output into top concept contributions, top one-dimensional fuzzy predicates, and optional projection-channel predicates. A global explanation reports the stable rule dictionary, including original feature names and term labels. Therefore the final model is not only a predictor, but also a reproducible fuzzy rule generator with fixed routing topology.
 
 \begin{figure}[H]
     \centering
     \includegraphics[width=\textwidth]{fig5_kafn_architecture.png}
-    \caption{Routed KAFN architecture: teacher-guided routing, binary-aware fuzzy terms, sparse projection-pursuit channels, additive KA concept layers, and sparse Sugeno decision.}
+    \caption{Routed KAFN architecture}
     \label{fig:kafn_architecture}
 \end{figure}
 
 Structural complexity is treated as an explicit architectural property rather than as a secondary implementation detail. In a flat global rule base, the number of candidate rules grows rapidly with input dimensionality. Local processing and restricted rule length reduce this growth and make it possible to analyze complexity as a measurable structural cost.
 
-Training is performed within a unified optimization framework, but DFFL is considered in two regimes. In the one-phase regime, all trainable components are optimized jointly after initialization. In the refined regime, training is staged: initialization is followed by concept-level pretraining, rule-base re-estimation in the updated representation space, and final fine-tuning. The purpose of this staged procedure is to stabilize the internal representation and make the hidden rule structure more reproducible across runs.
+For the reference fuzzy architectures, training is performed within a unified optimization framework, but DFFL is considered in two regimes. In the one-phase regime, all trainable components are optimized jointly after initialization. In the refined regime, training is staged: initialization is followed by concept-level pretraining, rule-base re-estimation in the updated representation space, and final fine-tuning. The purpose of this staged procedure is to stabilize the internal representation and make the hidden rule structure more reproducible across runs. Routed KAFN uses its own fixed routed topology and is trained end-to-end after routing, term initialization, and optional threshold calibration.
 
 The overall objective combines task performance with structural regularization,
 \[
@@ -323,7 +325,7 @@ The comparison includes the four reference neuro-fuzzy architectures and the pro
 
 For fuzzy models, the optimization budget is controlled by common defaults: pretraining epochs $18$, decision-pretraining epochs $14$, maximum epochs $80$, patience $20$, and batch size $64$. In binary tasks, the default classification threshold is $0.5$ and can be tuned on validation data in $[0.05,0.95]$. Hyperparameters are selected on validation splits under fixed family-specific search spaces and fixed trial budgets. For fairness, all compared models within each run use the same seed-specific split and fixed per-family budget policies. Standard ML baselines are evaluated on the same splits with fixed model configurations. Resolved settings, including regularization coefficients, are reported in the reproducibility artifacts.
 
-A structured reproducibility package is provided with the manuscript materials and includes resolved run configurations, seeds, metric tables, and figure-generation inputs (\href{https://github.com/lebedeffson/deep-neuro-fuzzy/tree/main/docs/article_current}{article bundle}, \href{https://github.com/lebedeffson/deep-neuro-fuzzy/tree/main/docs/artifacts}{artifacts}).
+A structured reproducibility package is provided with the manuscript materials and includes resolved run configurations, seeds, metric tables, and figure-generation inputs (\href{https://github.com/lebedeffson/deep-neuro-fuzzy}{repository}, \href{https://github.com/lebedeffson/deep-neuro-fuzzy/tree/main/docs/artifacts}{artifacts}).
 
 In this paper, interpretability is operationalized as \textit{structural interpretability}. It is evaluated at two complementary levels. The first is global and concerns the stability of the internal rule structure across repeated runs. The second is local and concerns the decision path for an individual test object. Together, these two perspectives assess reproducibility and traceability of the internal reasoning process. We do not treat this protocol as a full semantic interpretability validation.
 
@@ -340,13 +342,13 @@ To improve semantic readability beyond index-level tracing, routed predicates ar
 \begin{figure}[H]
     \centering
     \includegraphics[width=\textwidth]{fig6_kafn_explanation_flow.png}
-    \caption{Case-level explainability flow in Routed KAFN: from the input object through membership terms and top predicates to concept evidence, decision rules, and the final score.}
+    \caption{Case-level explainability flow in Routed KAFN}
     \label{fig:case_explainability_flow}
 \end{figure}
 
-In the present study, the local analysis is demonstrated on the focused \textit{covtype\_binary\_20000} setting, where Routed KAFN is the main proposed model. The first level of the architecture is dominated by routed feature predicates and optional sparse projection predicates, so the input is processed through a fixed, named rule dictionary rather than through a seed-dependent hidden rule topology. At the next level, these local signals are compressed into additive KA concept states. By the time the model reaches the output layer, the final prediction is determined by a small group of dominant Sugeno-style decision terms.
+In the present study, the local analysis is demonstrated on the focused \textit{covtype\_binary\_20000} setting, where Routed KAFN is the main proposed model. The first level of the architecture is dominated by routed feature predicates and optional sparse projection predicates, so the input is processed through a fixed, named rule dictionary rather than through a seed-dependent hidden rule topology. At the next level, these local signals are compressed into additive KA concept states. By the time the model reaches the output layer, the final prediction is determined by a small group of dominant affine decision contributions.
 
-The dominant rules involved in this example are summarized in Table~\ref{tab:case_rules}.
+The trace fields reported for such an example are summarized in Table~\ref{tab:case_rules}.
 
 \begin{table}[H]
 \centering
@@ -354,6 +356,7 @@ The dominant rules involved in this example are summarized in Table~\ref{tab:cas
 \label{tab:case_rules}
 \small
 \setlength{\tabcolsep}{4pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lcll}
 \toprule
 Level & Rule & Weight & Role \\
@@ -362,16 +365,17 @@ Stage 1 & \makecell[l]{\texttt{Elevation IS HIGH} \\ \texttt{OR WildernessArea\_
 Stage 1 & \makecell[l]{\texttt{SoilType\_k IS absent/present}} & reported per object & binary-aware one-hot evidence \\
 Projection & \makecell[l]{\texttt{pursuit\_m(Elevation, Slope, ...)} \\ \texttt{IS LOW/MEDIUM/HIGH}} & reported per object & sparse interaction evidence \\
 Concept & \makecell[l]{\texttt{KA concept q receives positive} \\ \texttt{and negative predicate contributions}} & reported per object & additive concept state \\
-Decision & \makecell[l]{\texttt{concept k IS HIGH/LOW} \\ \texttt{with Sugeno coefficient}} & reported per object & final decision contribution \\
+Decision & \makecell[l]{\texttt{concept k or projection m} \\ \texttt{with affine coefficient}} & reported per object & final decision contribution \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 Taken together, the global stability analysis and the local case-level trace define a unified interpretability protocol for the compared models. The former shows whether an architecture tends to recover a reproducible internal rule structure across runs, while the latter shows whether this structure can be read as a coherent decision path for an individual object.
 
 \section{Results}
 
-The compared architectures differ along three evaluation dimensions: predictive quality, rule-base complexity, and internal rule stability. In the reference comparison block, stacked shows the strongest average-rank profile, while DFFL remains competitive on selected tasks and no architecture dominates all tasks at once. The focused Covtype experiments then motivate and evaluate Routed KAFN as the final stability-oriented architecture.
+The compared architectures differ along three evaluation dimensions: predictive quality, rule-base complexity, and internal rule stability. In the reference comparison block, stacked shows the strongest average-rank profile, while DFFL remains competitive on selected tasks and no architecture dominates all tasks at once. The focused Covtype experiments then motivate and evaluate Routed KAFN as the main stability-oriented architecture of the study.
 The key quantitative evidence is reported in Tables~\ref{tab:main_results}, \ref{tab:extended_results}, \ref{tab:kanfis_covtype}, \ref{tab:kafn_ablation}, \ref{tab:kafn_best_criteria}, \ref{tab:covtype_capacity_check}, \ref{tab:susy_discriminative}, \ref{tab:best_vs_baseline}, and \ref{tab:all_vs_baseline}.
 Values in Tables~\ref{tab:main_results}--\ref{tab:all_vs_baseline} are reported as mean $\pm$ standard deviation across three seeds, except entries explicitly marked as single-seed checks; complete run settings and outputs are provided in the reproducibility artifacts.
 For transparency, Table~\ref{tab:main_results} uses one unified reference run for the four baseline neuro-fuzzy architectures. The Routed KAFN row is taken from the dedicated three-seed KAFN run \texttt{runs/kafn\_paper\_all\_3s\_2026-04-30}, which uses the same seeds and split protocol but a KAFN-specific routed configuration.
@@ -382,9 +386,10 @@ For transparency, Table~\ref{tab:main_results} uses one unified reference run fo
 \label{tab:main_results}
 \scriptsize
 \setlength{\tabcolsep}{1.5pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lllccccc}
 \toprule
-Model & \makecell[c]{Avg.\\ rules} & \makecell[c]{Mean\\ active-rule\\Jaccard} & Diabetes & Linnerud weight & Breast cancer & Wine binary & Digits binary\\
+Model & \makecell[c]{Avg.\\ rules/units} & \makecell[c]{Mean\\ active-rule\\Jaccard} & Diabetes & Linnerud weight & Breast cancer & Wine binary & Digits binary\\
  &  &  & RMSE & RMSE & F1 & F1 & F1 \\
 \midrule
 shallow model      & 36.00 & 0.2352 & 0.1852$\pm$0.0024 & 0.3519$\pm$0.2209 & 0.9750$\pm$0.0085 & 0.9577$\pm$0.0340 & 0.9367$\pm$0.0141 \\
@@ -393,7 +398,8 @@ hierarchical model & 75.00 & 0.1766 & 0.1937$\pm$0.0051 & 0.2430$\pm$0.1691 & 0.
 DFFL               & 75.47 & 0.0888 & 0.1796$\pm$0.0032 & 0.2874$\pm$0.2340 & 0.9652$\pm$0.0207 & 0.9564$\pm$0.0372 & 1.0000$\pm$0.0000 \\
 Routed KAFN        & 859.20 & 0.8393 & 0.1953$\pm$0.0058 & 0.2730$\pm$0.1620 & 0.9672$\pm$0.0235 & 0.9322$\pm$0.0369 & 0.9910$\pm$0.0127 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 The extended comparison shows the same trade-off at larger scale. Stacked remains strongest on \textit{california\_housing}, while Routed KAFN reaches the same mean F1 as hierarchical on \textit{covtype\_binary\_20000} and gives the highest active-rule stability in this two-dataset block.
@@ -404,9 +410,10 @@ The extended comparison shows the same trade-off at larger scale. Stacked remain
 \label{tab:extended_results}
 \small
 \setlength{\tabcolsep}{6pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lcccc}
 \toprule
-Model & Avg. rules & \makecell[c]{Mean active-rule\\Jaccard} & California housing & Covtype binary \\
+Model & \makecell[c]{Avg.\\ rules/units} & \makecell[c]{Mean active-rule\\Jaccard} & California housing & Covtype binary \\
  &  &  & RMSE & F1 \\
 \midrule
 shallow model      & 36  & 0.3841 & 0.1321$\pm$0.0010 & 0.7101$\pm$0.0183 \\
@@ -415,12 +422,13 @@ hierarchical model & 90  & 0.2343 & 0.1233$\pm$0.0044 & 0.8117$\pm$0.0052 \\
 DFFL               & 115.67 & 0.2712 & 0.1285$\pm$0.0013 & 0.7518$\pm$0.0046 \\
 Routed KAFN        & 888.00 & 0.9463 & 0.1271$\pm$0.0023 & 0.8117$\pm$0.0053 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
-After adding a validation-based rollback safeguard to the hard fine-tuning stage, we additionally re-ran a focused three-seed check on \textit{covtype\_binary\_20000}. The ranking of the reference fuzzy architectures remained unchanged: stacked F1 $=0.8222\pm0.0074$, hierarchical F1 $=0.8037\pm0.0058$, DFFL F1 $=0.7840\pm0.0078$, and shallow F1 $=0.7645\pm0.0030$. Thus, the implementation fix improves reliability of training behavior without changing the main comparative conclusion on this data regime.
+After adding a validation-based rollback safeguard to the hard fine-tuning stage, we additionally re-ran a focused three-seed Covtype-20k check. The ranking of the reference fuzzy architectures remained unchanged: stacked F1 $=0.8222\pm0.0074$, hierarchical F1 $=0.8037\pm0.0058$, DFFL F1 $=0.7840\pm0.0078$, and shallow F1 $=0.7645\pm0.0030$. Thus, the implementation fix improves reliability of training behavior without changing the main comparative conclusion on this data regime.
 
-The proposed Routed KAFN is evaluated in the same focused Covtype setting because this benchmark exposes the main tension between predictive quality and rule stability. The final configuration uses $Q=12$ first-stage concepts, grouped teacher-guided routing, fan-in $20$, binary-aware fuzzy terms, calibrated threshold tuning, and eight fixed projection-pursuit channels of width four. The non-projection binary-aware variant keeps only 780 active rules and gives the highest structural stability, while the projection variant gives the strongest KAFN predictive result.
+The proposed Routed KAFN is evaluated in the same focused Covtype setting because this benchmark exposes the main tension between predictive quality and rule stability. The final configuration uses $Q=12$ first-stage concepts, grouped teacher-guided routing, fan-in $20$, binary-aware fuzzy terms, calibrated threshold tuning, and eight fixed projection-pursuit channels of width four. The non-projection binary-aware variant keeps only 780 active predicates and gives the highest structural stability, while the projection variant gives the strongest KAFN predictive result.
 
 \begin{table}[H]
 \centering
@@ -428,9 +436,10 @@ The proposed Routed KAFN is evaluated in the same focused Covtype setting becaus
 \label{tab:kanfis_covtype}
 \scriptsize
 \setlength{\tabcolsep}{2pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lcccccl}
 \toprule
-Model & F1 & ROC-AUC & PR-AUC & Active rules & Jaccard & Comment \\
+Model & F1 & ROC-AUC & PR-AUC & \makecell[c]{Active rules/\\predicates} & Jaccard & Comment \\
 \midrule
 shallow fuzzy & 0.7645$\pm$0.0030 & 0.8113$\pm$0.0032 & 0.7602$\pm$0.0034 & 18.7 & 0.3493 & compact fuzzy reference \\
 DFFL & 0.7840$\pm$0.0078 & 0.8530$\pm$0.0087 & 0.8272$\pm$0.0108 & 73.0 & 0.1077 & concept-oriented reference \\
@@ -441,10 +450,11 @@ Routed KAFN, fixed projections & 0.8174$\pm$0.0101 & 0.8857$\pm$0.0035 & 0.8605$
 stacked fuzzy & 0.8222$\pm$0.0074 & 0.8902$\pm$0.0066 & 0.8643$\pm$0.0091 & 20.7 & 0.0978 & strongest fuzzy F1 reference \\
 Extra Trees & 0.8546$\pm$0.0026 & 0.9296$\pm$0.0034 & 0.9181$\pm$0.0038 & -- & -- & teacher and upper baseline \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
-For the pre-projection teacher-guided grouped KA model, the additional three-seed verification gives ROC-AUC $=0.8848$ and PR-AUC $=0.8595$ at F1 $=0.8166\pm0.0029$ with 936 rules and active-rule Jaccard $=0.9079$. This confirms that the routed additive construction is not only an F1-specific improvement. The binary-aware variant then reduces the active rule base from 936 to 780 and increases Jaccard to $0.9188$ with essentially unchanged F1. The fixed-projection variant is selected as the final KAFN because it gives the best mean F1 among the stable KA configurations while keeping Jaccard above $0.91$.
+For the pre-projection teacher-guided grouped KA model, the additional three-seed verification gives ROC-AUC $=0.8848$ and PR-AUC $=0.8595$ at F1 $=0.8166\pm0.0029$ with 936 active predicates and active-rule Jaccard $=0.9079$. This confirms that the routed additive construction is not only an F1-specific improvement. The binary-aware variant then reduces the active predicate set from 936 to 780 and increases Jaccard to $0.9188$ with essentially unchanged F1. The fixed-projection variant is selected as the final KAFN because it gives the best mean F1 among the stable KA configurations while keeping Jaccard above $0.91$.
 
 \begin{table}[H]
 \centering
@@ -452,19 +462,23 @@ For the pre-projection teacher-guided grouped KA model, the additional three-see
 \label{tab:kafn_ablation}
 \scriptsize
 \setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lcccccl}
 \toprule
-Variant & F1 & ROC-AUC & PR-AUC & Active rules & Jaccard & Interpretation \\
+Variant & F1 & ROC-AUC & PR-AUC & \makecell[c]{Active rules/\\predicates} & Jaccard & Interpretation \\
 \midrule
 Teacher-guided grouped KA & 0.8166$\pm$0.0029 & 0.8848$\pm$0.0019 & 0.8595$\pm$0.0037 & 936 & 0.9079 & stable base model \\
 KA + calibrated threshold & 0.8169$\pm$0.0031 & 0.8848$\pm$0.0019 & 0.8595$\pm$0.0037 & 936 & 0.9079 & threshold-only gain \\
 KA + binary-aware terms & 0.8165$\pm$0.0067 & 0.8830$\pm$0.0014 & 0.8585$\pm$0.0042 & 780 & 0.9188 & clearer one-hot logic \\
 Routed KAFN + fixed projections & 0.8174$\pm$0.0101 & 0.8857$\pm$0.0035 & 0.8605$\pm$0.0022 & 936 & 0.9167 & final trade-off \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
-The final KA variant does not overtake the stacked fuzzy model in mean F1, but it changes the quality--interpretability balance. Compared with stacked fuzzy, it loses about $0.0048$ F1 while increasing active-rule Jaccard from $0.0978$ to $0.9167$. Compared with histogram gradient boosting, it gives a slightly higher mean F1 in this focused block and provides explicit fuzzy rules. Compared with the binary-aware KA variant, the projection extension adds interaction capacity and improves mean F1 from $0.8165$ to $0.8174$, at the cost of increasing active rules from 780 to 936.
+The final KA variant does not overtake the stacked fuzzy model in mean F1, but it changes the quality--interpretability balance. Compared with stacked fuzzy, it loses about $0.0048$ F1 while increasing active-rule Jaccard from $0.0978$ to $0.9167$. Compared with histogram gradient boosting, it gives a slightly higher mean F1 in this focused block and provides explicit fuzzy rules. Compared with the binary-aware KA variant, the projection extension adds interaction capacity and improves mean F1 from $0.8165$ to $0.8174$, at the cost of increasing active predicates from 780 to 936.
+
+The larger rule count should be read as a different kind of structural cost than in ANFIS-style rule bases. KAFN counts routed unary predicates and fixed projection predicates; it does not enumerate a full multidimensional antecedent product over the selected features.
 
 \begin{table}[H]
 \centering
@@ -498,9 +512,10 @@ Because the larger Covtype task suggested that the reference stacked model may b
 \label{tab:covtype_capacity_check}
 \scriptsize
 \setlength{\tabcolsep}{4pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lccccc}
 \toprule
-Model & F1 & ROC-AUC & PR-AUC & Rules & Active-rule Jaccard \\
+Model & F1 & ROC-AUC & PR-AUC & Rules/units & Active-rule Jaccard \\
 \midrule
 stacked (enhanced)& 0.9466$\pm$0.0015 & 0.9895$\pm$0.0005 & 0.9886$\pm$0.0005 & 150 & 0.1625 \\
 DFFL & 0.8478$\pm$0.0037 & 0.9246$\pm$0.0033 & 0.9149$\pm$0.0037 & 144 & 0.0222 \\
@@ -509,17 +524,19 @@ hist gradient boosting & 0.8328$\pm$0.0011 & 0.9183$\pm$0.0010 & 0.9099$\pm$0.00
 MLP & 0.8589$\pm$0.0009 & 0.9377$\pm$0.0026 & 0.9307$\pm$0.0029 & -- & -- \\
 extra trees & 0.9543$\pm$0.0003 & 0.9919$\pm$0.0001 & 0.9912$\pm$0.0002 & -- & -- \\
 random forest & 0.9560$\pm$0.0001 & 0.9924$\pm$0.0001 & 0.9918$\pm$0.0001 & -- & -- \\
+Routed KAFN, final config & 0.8485$\pm$0.0030 & 0.9246$\pm$0.0036 & 0.9135$\pm$0.0043 & 936 & 0.9696 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
-The capacity-tuned stacked model substantially improves over the smaller reference configurations and becomes stronger than histogram gradient boosting, MLP, and the tested hierarchical fuzzy variant on full Covtype. However, it remains below Random Forest and Extra Trees. DFFL in the current three-seed run reaches F1 $=0.8478\pm0.0037$, which is above histogram gradient boosting but below MLP, stacked, and tree ensembles.
+The capacity-tuned stacked model substantially improves over the smaller reference configurations and becomes stronger than histogram gradient boosting, MLP, and the tested hierarchical fuzzy variant on full Covtype. However, it remains below Random Forest and Extra Trees. DFFL in the current three-seed run reaches F1 $=0.8478\pm0.0037$, which is above histogram gradient boosting but below MLP, stacked, and tree ensembles. Routed KAFN reaches a similar full-Covtype F1 level, $0.8485\pm0.0030$, while preserving much higher active-rule stability ($0.9696$).
 
-Routed KAFN is not included in Table~\ref{tab:covtype_capacity_check}, because a completed full-\textit{covtype\_binary} KAFN run was not available for the same full-scale block. Its validated large-tabular result in this manuscript is the focused \textit{covtype\_binary\_20000} block reported in Tables~\ref{tab:kanfis_covtype}--\ref{tab:kafn_best_criteria}.
+The full-Covtype KAFN run uses the same final routed configuration as the focused Covtype experiment and is reported as a large-scale validation check rather than as a new capacity-tuned variant.
 
 As an additional fairness-oriented diagnostic, we ran a capacity-matched fuzzy-only setting on full Covtype under a unified fast budget. In this setting, stacked and DFFL use near-matched total rules (106 and 107 respectively), while hierarchical uses 171 rules in the same budget regime. Stacked remains the strongest fuzzy variant (F1 $=0.9049\pm0.0043$), followed by hierarchical (F1 $=0.8540\pm0.0051$) and DFFL (F1 $=0.8021\pm0.0075$). This diagnostic indicates that, in the current implementation, DFFL does not close the quality gap to stacked even when the rule-budget comparison is constrained.
 
-As a secondary large-scale sanity check, we evaluate \textit{kddcup99\_binary\_10percent}. In this check, fuzzy models reach near-saturated F1 values: shallow $0.9965\pm0.0006$, stacked $0.9995\pm0.0001$, hierarchical $0.9995\pm0.0001$, and DFFL $0.9993\pm0.0001$. This setting confirms feasibility and repeated-run behavior, but it is weakly discriminative because most methods approach perfect scores. For this reason, we do not use KDD as a primary quality separator in the main comparative interpretation.
+As a secondary large-scale sanity check, we evaluate the 10 percent KDDCup99 binary split. In this check, fuzzy models reach near-saturated F1 values: shallow $0.9965\pm0.0006$, stacked $0.9995\pm0.0001$, hierarchical $0.9995\pm0.0001$, DFFL $0.9993\pm0.0001$, and Routed KAFN $0.9996\pm0.0000$. This setting confirms feasibility and repeated-run behavior, but it is weakly discriminative because most methods approach perfect scores. For this reason, we do not use KDD as a primary quality separator in the main comparative interpretation.
 
 To reduce the near-perfect saturation effect observed on KDD, we add a more discriminative large-scale check on \textit{SUSY-200k}. Fuzzy-model values are reported over three seeds, while baseline values are a single-seed snapshot (seed 23) and are therefore treated as contextual rather than significance-tested comparisons.
 
@@ -537,6 +554,7 @@ shallow fuzzy & 0.7626$\pm$0.0062 & 0.8582$\pm$0.0072 & 0.8602$\pm$0.0092 & 3 \\
 stacked fuzzy & 0.7713$\pm$0.0039 & 0.8685$\pm$0.0039 & 0.8725$\pm$0.0042 & 3 \\
 hierarchical fuzzy & 0.7708$\pm$0.0047 & 0.8688$\pm$0.0032 & 0.8738$\pm$0.0028 & 3 \\
 DFFL & 0.7718$\pm$0.0020 & 0.8688$\pm$0.0021 & 0.8728$\pm$0.0015 & 3 \\
+Routed KAFN, final config & 0.7758$\pm$0.0018 & 0.8729$\pm$0.0010 & 0.8773$\pm$0.0006 & 3 \\
 logistic regression & 0.7395 & 0.8556 & 0.8595 & 1 \\
 hist gradient boosting & 0.7655 & 0.8745 & 0.8789 & 1 \\
 mlp classifier & 0.7687 & 0.8736 & 0.8787 & 1 \\
@@ -544,12 +562,12 @@ mlp classifier & 0.7687 & 0.8736 & 0.8787 & 1 \\
 \end{tabular}
 \end{table}
 
-Routed KAFN is likewise not reported in the SUSY table, because the available completed SUSY run predates the final KAFN configuration. We therefore do not transfer the focused Covtype KAFN numbers to SUSY.
+On SUSY-200k, Routed KAFN gives the strongest three-seed fuzzy F1 in this block, while histogram gradient boosting and MLP retain slightly higher single-seed ROC-AUC or PR-AUC values. We therefore use SUSY as a discriminative large-scale check, but not as a claim of universal dominance over external baselines.
 
 To evaluate robustness, we report nonparametric tests on benchmark summaries: a Friedman test with pairwise Wilcoxon signed-rank tests and Holm correction. In the main block, the dataset-level Friedman test is not significant ($\chi^2=2.04$, $p=0.6327$). In the extended block, it is significant ($\chi^2=6.00$, $p=0.0383$), but no pairwise comparison remains significant after Holm correction at $\alpha=0.05$.
-These tests are computed on the unified three-seed benchmark blocks, while the separate full-Covtype capacity table is treated as a diagnostic and excluded from significance testing.
+These tests are computed on the reference three-seed benchmark blocks and do not include the separate KAFN-focused Covtype ablations or the later large-scale KAFN validation checks. The separate full-Covtype capacity table is also treated as a diagnostic and excluded from significance testing.
 
-Because active-rule stability depends on the activation threshold $\tau_{\mathrm{act}}$, we additionally ran a threshold-sensitivity check on the main benchmark block with $\tau\in\{0.3,0.5,0.7\}$. At $\tau=0.3$, mean active-rule Jaccard across datasets is 0.4511 (stacked), 0.4381 (hierarchical), and 0.2261 (DFFL). At the default $\tau=0.5$, the same values are 0.1218, 0.1640, and 0.2198. At $\tau=0.7$, stacked and hierarchical saturate at 1.0 in this fast setting due to the very sparse surviving active-rule sets, while DFFL remains at 0.2090. This supplementary fast-setting check is threshold-sensitive and does not replace the main reference comparison in Table~\ref{tab:main_results}. We therefore keep $\tau_{\mathrm{act}}=0.5$ as the default reporting point and interpret high-$\tau$ values with caution.
+Because active-rule stability depends on the activation threshold $\tau_{\mathrm{act}}$, we additionally ran a threshold-sensitivity check for the reference fuzzy architectures on the main benchmark block with $\tau\in\{0.3,0.5,0.7\}$. At $\tau=0.3$, mean active-rule Jaccard across datasets is 0.4511 (stacked), 0.4381 (hierarchical), and 0.2261 (DFFL). At the default $\tau=0.5$, the same values are 0.1218, 0.1640, and 0.2198. At $\tau=0.7$, stacked and hierarchical saturate at 1.0 in this fast setting due to the very sparse surviving active-rule sets, while DFFL remains at 0.2090. This supplementary fast-setting check is threshold-sensitive, does not include Routed KAFN, and does not replace the main reference comparison in Table~\ref{tab:main_results}. We therefore keep $\tau_{\mathrm{act}}=0.5$ as the default reporting point and interpret high-$\tau$ values with caution.
 
 The comparison with external baselines is included to contextualize raw predictive performance. The main contribution of this study is the Routed KAFN architecture and its evaluation against both neuro-fuzzy and non-fuzzy baselines under a multi-criteria protocol. The earlier shallow, stacked, hierarchical, and DFFL models remain important because they show why a routed additive KA structure is useful: stacked models are accurate but structurally unstable, while concept-oriented DFFL is traceable but does not close the Covtype quality gap.
 
@@ -559,6 +577,7 @@ The comparison with external baselines is included to contextualize raw predicti
 \label{tab:best_vs_baseline}
 \scriptsize
 \setlength{\tabcolsep}{2pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lclclcl}
 \toprule
 Dataset & Metric & Best neuro-fuzzy model & Value & Routed KAFN & Best baseline & Value \\
@@ -571,7 +590,8 @@ digits\_binary         & F1   & DFFL               & 1.0000$\pm$0.0000 & 0.9910$
 california\_housing    & RMSE & stacked model      & 0.1193$\pm$0.0066 & 0.1271$\pm$0.0023 & hist gradient boosting   & 0.0972$\pm$0.0014 \\
 covtype\_binary\_20000 & F1   & stacked fuzzy      & 0.8222$\pm$0.0074 & 0.8174$\pm$0.0101 & extra trees classifier   & 0.8546$\pm$0.0026 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 \begin{table}[H]
@@ -580,6 +600,7 @@ covtype\_binary\_20000 & F1   & stacked fuzzy      & 0.8222$\pm$0.0074 & 0.8174$
 \label{tab:all_vs_baseline}
 \scriptsize
 \setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{lclccccc}
 \toprule
 Dataset & Metric & Best baseline & Shallow & Stacked & Hierarchical & DFFL & Routed KAFN \\
@@ -592,7 +613,8 @@ digits\_binary         & F1   & mlp classifier                   & -0.0633 & -0.
 california\_housing    & RMSE & hist gradient boosting & -0.0349 & -0.0221 & -0.0262 & -0.0313 & -0.0299 \\
 covtype\_binary\_20000 & F1   & extra trees classifier           & -0.0901 & -0.0324 & -0.0509 & -0.0706 & -0.0372 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 As shown in Table~\ref{tab:all_vs_baseline}, the reference neuro-fuzzy models outperform the best external baseline on \textit{linnerud\_weight}. Routed KAFN is also better than the external baseline on \textit{linnerud\_weight}, but on the remaining tasks it is below the strongest external baseline. In the focused Covtype block it is close to stacked fuzzy and above histogram gradient boosting, but it remains below Extra Trees.
@@ -605,6 +627,8 @@ The KAFN ablation leads to the same general conclusion. Adding binary-aware term
 
 The comparison shows a stable pattern. Different forms of depth in neuro-fuzzy systems support different objectives, and no single architecture dominates all criteria at once. Sequential and hierarchical organizations remain strong in predictive terms, while DFFL clarifies the limits of concept-oriented decomposition. Routed KAFN is introduced as the final response to this limitation: it keeps a deep concept structure, but avoids high-order fuzzy products by using routed additive one-dimensional predicates.
 
+Thus, Routed KAFN can be read as a response to the two main weaknesses of the DFFL profile observed in the reference experiments: unstable active-rule recovery and loss of cross-feature information after early local aggregation.
+
 The full Covtype capacity check clarifies this point at implementation level. The reference stacked setup was constrained by optimization settings and by the available rule and concept capacity. After increasing capacity and adding a gated raw-feature skip, stacked reached the strongest fuzzy result on this large task. At the same time, the gain required a larger rule budget and came with lower active-rule Jaccard, so the quality gain was achieved through a clear trade-off between quality, complexity, and stability.
 
 Within the same Covtype setting, DFFL remains below the capacity-tuned stacked variant. This suggests that the original DFFL configuration still needs stronger bridge and aggregation capacity to preserve cross-feature information more effectively in high-dimensional tabular data. Routed KAFN addresses this issue more directly: teacher-guided routes preserve feature-level access, binary-aware terms remove uninformative predicates for one-hot variables, and fixed projection channels add a small controlled interaction layer.
@@ -613,7 +637,7 @@ Runtime measurements support the same interpretation. Under matched fast setting
 
 This is important for the main claim of the paper. If interpretability is treated as a property of internal reasoning rather than an external post hoc explanation, then evaluation cannot be reduced to RMSE or F1. Reproducibility of internal rule structure becomes a necessary criterion alongside predictive quality. This is where Routed KAFN gives its clearest advantage: the final projection variant reaches active-rule Jaccard $0.9167$, while the stronger-F1 stacked fuzzy model reaches only $0.0978$ in the focused Covtype check.
 
-The current DFFL results should therefore be interpreted as an architectural operating regime rather than as a uniform accuracy gain. In these experiments, quality-oriented tuning gives the best fuzzy value on \textit{diabetes} (RMSE) and \textit{digits\_binary} (F1), while the model remains below the strongest external baselines on several tasks and shows lower active-rule reproducibility in the main block. Routed KAFN changes this conclusion for the focused Covtype analysis: it does not beat Extra Trees and does not fully overtake stacked fuzzy, but it reaches the histogram-gradient-boosting level while preserving a stable named rule structure.
+The current DFFL results should therefore be interpreted as an architectural operating regime rather than as a uniform accuracy gain. In these experiments, quality-oriented tuning gives the best fuzzy value on \textit{diabetes} (RMSE) and \textit{digits\_binary} (F1), while the model remains below the strongest external baselines on several tasks and shows lower active-rule reproducibility in the main block. Routed KAFN changes this conclusion for the focused Covtype analysis: it does not beat Extra Trees and does not fully overtake stacked fuzzy, but it reaches the histogram-gradient-boosting level and slightly exceeds it in mean F1 while preserving a stable named rule structure.
 
 One likely mechanism behind this trade-off is the early local decomposition used in DFFL. It reduces combinatorial rule growth, but it also creates an early information bottleneck because upper layers operate on aggregated local representations rather than the full original feature space. Routed KAFN reduces this bottleneck by routing teacher-ranked original predicates into each concept and by adding fixed projection-pursuit channels for limited cross-feature evidence.
 
@@ -625,7 +649,7 @@ The main limitation is empirical scope. The current evidence is restricted to ta
 
 The second limitation concerns semantic validation depth. In this paper, interpretability is evaluated primarily in structural terms through rule sets, rule counts, stability, and case-level traceability. This provides reproducible internal diagnostics, but full domain-expert assessment of concept meaning remains an important next stage.
 
-The third limitation concerns large-scale efficiency. The large-scale results are mixed. DFFL remains competitive with the strongest fuzzy variants on SUSY-200k, and the KDD feasibility check confirms that the model can be trained and evaluated in a larger setting. At the same time, full Covtype exposes a harder regime for the present configuration. Routed KAFN is currently validated as a focused Covtype-20k improvement; full-scale KAFN evaluation remains future work.
+The third limitation concerns large-scale efficiency. The large-scale results are mixed. Routed KAFN remains stable on full Covtype, SUSY-200k, and KDDCup99-10\%, but full Covtype also shows that the final routed configuration does not close the gap to capacity-tuned stacked fuzzy models or tree ensembles. Scaling and tuning Routed KAFN on additional large-scale data sets, including full SUSY and full KDDCup99, remains future work.
 
 \section{Conclusion}
 
@@ -633,9 +657,11 @@ This paper examined how to increase complexity in neuro-fuzzy models while prese
 
 The study presents Routed KAFN as a teacher-guided Kolmogorov--Arnold fuzzy network with binary-aware fuzzy terms and fixed projection-pursuit channels. On \textit{covtype\_binary\_20000}, the final KAFN variant reaches F1 $=0.8174\pm0.0101$ with active-rule Jaccard $=0.9167$. This is close to stacked fuzzy in F1 and much stronger in rule-structure reproducibility.
 
+The large-scale checks support the same reading. The final KAFN configuration reaches F1 $=0.8485\pm0.0030$ on full Covtype, F1 $=0.7758\pm0.0018$ on SUSY-200k, and F1 $=0.9996\pm0.0000$ on KDDCup99-10\%, while preserving high active-rule stability.
+
 These findings imply that architecture selection in deep neuro-fuzzy modeling should be treated as a joint optimization problem, where predictive accuracy, rule-base size, reproducibility of internal rule structure, and runtime efficiency are considered together.
 
-Further work should scale Routed KAFN to the full Covtype setting, strengthen projection-route selection, and add domain-expert validation of the named concepts and local rule traces beyond structural stability metrics.
+Further work should scale Routed KAFN to full Covtype and improve projection routing. Domain experts should then validate the named concepts and local traces.
 
 \bibliographystyle{splncs04}
 \bibliography{docs/iiti26_references_skeleton_en}
