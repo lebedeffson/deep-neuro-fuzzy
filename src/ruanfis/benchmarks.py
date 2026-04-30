@@ -150,6 +150,8 @@ def _iter_fuzzy_rule_layers(model: nn.Module) -> tuple[nn.Module, ...]:
         return tuple(layers)
     if isinstance(model, StackedAnfisModel):
         return tuple(model.iter_rule_layers())
+    if hasattr(model, "iter_rule_layer_entries"):
+        return tuple(layer for _, layer in model.iter_rule_layer_entries())
     return ()
 
 
@@ -165,6 +167,8 @@ def _iter_fuzzy_rule_layer_entries(
         entries.append((model.decision_layer.name, model.decision_layer))
         return tuple(entries)
     if isinstance(model, StackedAnfisModel):
+        return tuple(model.iter_rule_layer_entries())
+    if hasattr(model, "iter_rule_layer_entries"):
         return tuple(model.iter_rule_layer_entries())
     return ()
 
@@ -305,6 +309,21 @@ def _summarize_fuzzy_model_structure(
             connected_block.block.output_dim for stage in model.stages for connected_block in stage.blocks
         )
         stages = float(len(model.stages))
+    elif hasattr(model, "concept_widths"):
+        concept_widths = tuple(int(width) for width in getattr(model, "concept_widths"))
+        hidden_blocks = len(concept_widths)
+        pair_layer = getattr(model, "pair_layer", None)
+        projection_layer = getattr(model, "projection_layer", None)
+        hidden_concepts = (
+            sum(concept_widths)
+            + int(getattr(pair_layer, "output_dim", 0) or 0)
+            + int(getattr(projection_layer, "output_dim", 0) or 0)
+        )
+        stages = float(hidden_blocks)
+    elif hasattr(model, "superposition_terms"):
+        hidden_blocks = 1
+        hidden_concepts = int(getattr(model, "superposition_terms"))
+        stages = 1.0
     else:
         # Stacked ANFIS: every hidden layer is a fuzzy rule layer.
         hidden_blocks = max(len(layers) - 1, 0)
@@ -484,7 +503,7 @@ def evaluate_trained_model(
     structural_metrics: dict[str, float] = {}
     explainability_metrics: dict[str, float] = {}
     stability_artifacts: dict[str, tuple[str, ...]] = {}
-    if isinstance(model, (DeepFuzzyFeatureModel, StackedAnfisModel)):
+    if isinstance(model, (DeepFuzzyFeatureModel, StackedAnfisModel)) or hasattr(model, "iter_rule_layer_entries"):
         structural_metrics = _summarize_fuzzy_model_structure(
             model,
             rule_probability_threshold=rule_probability_threshold,

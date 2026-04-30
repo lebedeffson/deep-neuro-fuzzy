@@ -32,6 +32,11 @@ class BaseFuzzyRuleLayer(nn.Module):
             dtype=torch.float32,
         )
         self.rule_logits = nn.Parameter(gate_inits)
+        self.register_buffer(
+            "rule_probability_anchor",
+            torch.sigmoid(gate_inits.detach()).clone(),
+            persistent=False,
+        )
 
     @property
     def input_dim(self) -> int:
@@ -44,6 +49,10 @@ class BaseFuzzyRuleLayer(nn.Module):
     @property
     def rule_probabilities(self) -> Tensor:
         return torch.sigmoid(self.rule_logits)
+
+    def refresh_rule_probability_anchor(self) -> None:
+        with torch.no_grad():
+            self.rule_probability_anchor.copy_(torch.sigmoid(self.rule_logits.detach()))
 
     def _validate_inputs(self, inputs: Tensor) -> None:
         if inputs.ndim != 2:

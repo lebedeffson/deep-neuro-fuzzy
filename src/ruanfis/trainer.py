@@ -18,6 +18,8 @@ from .regularizers import (
     membership_coverage_penalty,
     membership_center_order_penalty,
     membership_overlap_penalty,
+    rule_activation_entropy_penalty,
+    rule_anchor_stability_penalty,
     rule_sparsity_penalty,
     weighted_rule_length_penalty,
 )
@@ -69,6 +71,8 @@ class TrainingConfig:
     block_agreement_target_corr: float = 0.2
     block_agreement_stage_limit: int = 1
     block_agreement_every_n_steps: int = 1
+    rule_activation_entropy_weight: float = 0.0
+    rule_anchor_stability_weight: float = 0.0
     regularization_warmup_epochs: int = 0
     top_k_warmup_epochs: int = 0
     prune_after_fit: bool = False
@@ -210,6 +214,8 @@ class FuzzyTrainer:
 
         device = self._resolve_device()
         self.model.to(device)
+        if self.config.rule_anchor_stability_weight > 0.0:
+            self._refresh_rule_probability_anchors()
         train_inputs = train_inputs.to(device=device, dtype=torch.float32)
         train_targets = train_targets.to(device=device, dtype=torch.float32)
         if has_validation:
@@ -876,7 +882,22 @@ class FuzzyTrainer:
             )
         if self.config.block_gate_l1_weight > 0.0:
             penalty = penalty + scale * self.config.block_gate_l1_weight * block_gate_l1_penalty(self.model)
+        if self.config.rule_activation_entropy_weight > 0.0:
+            penalty = (
+                penalty
+                + scale * self.config.rule_activation_entropy_weight * rule_activation_entropy_penalty(self.model)
+            )
+        if self.config.rule_anchor_stability_weight > 0.0:
+            penalty = (
+                penalty
+                + scale * self.config.rule_anchor_stability_weight * rule_anchor_stability_penalty(self.model)
+            )
         return penalty
+
+    def _refresh_rule_probability_anchors(self) -> None:
+        for submodule in self.model.modules():
+            if hasattr(submodule, "refresh_rule_probability_anchor"):
+                submodule.refresh_rule_probability_anchor()
 
     def _iter_batches(self, inputs: Tensor, targets: Tensor) -> Iterable[tuple[Tensor, Tensor]]:
         batch_size = self.config.batch_size or inputs.size(0)

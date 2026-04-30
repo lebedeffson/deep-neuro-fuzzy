@@ -4,6 +4,7 @@ from typing import Sequence
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from .blocks import SugenoDecisionLayer
 from .stages import FuzzyStage
@@ -19,6 +20,7 @@ class DeepFuzzyFeatureModel(nn.Module):
         final_skip_input_indices: Sequence[int] = (),
         final_skip_gates_enabled: bool = False,
         final_skip_gate_init_logit: float = 2.0,
+        concept_dropout_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self.stages = nn.ModuleList(stages)
@@ -27,6 +29,9 @@ class DeepFuzzyFeatureModel(nn.Module):
         self.final_skip_input_indices = tuple(int(index) for index in final_skip_input_indices)
         self.final_skip_gates_enabled = bool(final_skip_gates_enabled)
         self.final_skip_gate_init_logit = float(final_skip_gate_init_logit)
+        self.concept_dropout_rate = float(concept_dropout_rate)
+        if not 0.0 <= self.concept_dropout_rate < 1.0:
+            raise ValueError("concept_dropout_rate must be in [0, 1).")
         if len(set(self.final_skip_input_indices)) != len(self.final_skip_input_indices):
             raise ValueError("Final skip input indices must be unique.")
         if any(index < 0 for index in self.final_skip_input_indices):
@@ -81,6 +86,8 @@ class DeepFuzzyFeatureModel(nn.Module):
         features = inputs
         for stage in self.stages:
             features = stage(features, top_k_rules=top_k_rules)
+            if self.training and self.concept_dropout_rate > 0.0:
+                features = F.dropout(features, p=self.concept_dropout_rate, training=True)
         return self._append_final_skip_inputs(inputs, features)
 
     def forward(self, inputs: Tensor, top_k_rules: int | None = None) -> Tensor:

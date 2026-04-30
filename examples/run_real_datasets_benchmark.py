@@ -40,6 +40,8 @@ from ruanfis import (  # noqa: E402
     HierarchicalAnfisBlockConfig,
     HierarchicalAnfisModelConfig,
     HierarchicalAnfisStageConfig,
+    DeepKANFISModel,
+    KANFISModel,
     HierarchicalModelConfig,
     MultiSeedBenchmarkResult,
     RefinementLoopConfig,
@@ -178,6 +180,9 @@ class DfflProfile:
     block_agreement_weight: float = 0.0
     block_agreement_target_corr: float = 0.2
     block_agreement_stage_limit: int = 1
+    rule_activation_entropy_weight: float = 0.0
+    rule_anchor_stability_weight: float = 0.0
+    concept_dropout_rate: float = 0.0
     final_skip_input_count: int = 0
     final_skip_input_indices: tuple[int, ...] = ()
     final_skip_mode: str = "target_corr_diverse"
@@ -195,6 +200,10 @@ def set_seed(seed: int) -> None:
 def progress_log(message: str) -> None:
     timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[progress {timestamp}] {message}", flush=True)
+
+
+def _is_covtype_binary_dataset(dataset_name: str) -> bool:
+    return str(dataset_name).strip().lower().startswith("covtype_binary")
 
 
 def detect_git_revision() -> str | None:
@@ -326,6 +335,8 @@ def parse_fuzzy_model_names(raw: str) -> tuple[str, ...]:
         "stacked": "ruanfis_stacked_anfis",
         "hierarchical": "ruanfis_hierarchical_anfis",
         "hier": "ruanfis_hierarchical_anfis",
+        "kanfis": "ruanfis_kanfis",
+        "ka_anfis": "ruanfis_kanfis",
         "dffl": "ruanfis_refined_deep",
         "refined_deep": "ruanfis_refined_deep",
     }
@@ -483,6 +494,50 @@ def _load_covtype_binary_200000() -> tuple[np.ndarray, np.ndarray]:
 
 def _load_covtype_binary_full() -> tuple[np.ndarray, np.ndarray]:
     return _load_covtype_binary_subset(None)
+
+
+def _covtype_feature_names() -> list[str]:
+    names = [
+        "Elevation",
+        "Aspect",
+        "Slope",
+        "Horizontal_Distance_To_Hydrology",
+        "Vertical_Distance_To_Hydrology",
+        "Horizontal_Distance_To_Roadways",
+        "Hillshade_9am",
+        "Hillshade_Noon",
+        "Hillshade_3pm",
+        "Horizontal_Distance_To_Fire_Points",
+    ]
+    names.extend([f"Wilderness_Area_{index}" for index in range(1, 5)])
+    names.extend([f"Soil_Type_{index}" for index in range(1, 41)])
+    return names
+
+
+def _dataset_feature_names(dataset_name: str, input_dim: int) -> list[str]:
+    try:
+        if dataset_name == "breast_cancer":
+            names = list(load_breast_cancer().feature_names)
+        elif dataset_name == "diabetes":
+            names = list(load_diabetes().feature_names)
+        elif dataset_name == "wine_binary":
+            names = list(load_wine().feature_names)
+        elif dataset_name == "digits_binary":
+            data = load_digits()
+            names = list(getattr(data, "feature_names", [])) or [f"pixel_{index}" for index in range(input_dim)]
+        elif dataset_name == "california_housing":
+            names = list(fetch_california_housing().feature_names)
+        elif _is_covtype_binary_dataset(dataset_name):
+            names = _covtype_feature_names()
+        elif dataset_name == "linnerud_weight":
+            names = list(load_linnerud().feature_names)
+        else:
+            names = []
+    except Exception:
+        names = []
+    if len(names) < input_dim:
+        names.extend([f"feature_{index}" for index in range(len(names), input_dim)])
+    return names[:input_dim]
 
 
 def _ensure_susy_csv_gz() -> Path:
@@ -676,6 +731,7 @@ FUZZY_MODEL_NAMES: tuple[str, ...] = (
     "ruanfis_shallow",
     "ruanfis_stacked_anfis",
     "ruanfis_hierarchical_anfis",
+    "ruanfis_kanfis",
     "ruanfis_refined_deep",
 )
 
@@ -907,24 +963,30 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         bridge_prototype_term_limit=2,
         bridge_prototype_scoring_mode="hybrid",
         bridge_prototype_sample_size=1024,
-        stagewise_rule_swap_ratio=0.35,
-        stagewise_rule_swap_min_keep=10,
+        stagewise_rule_swap_ratio=0.10,
+        stagewise_rule_swap_min_keep=12,
         block_agreement_weight=1.5e-3,
         block_agreement_target_corr=0.22,
         block_agreement_stage_limit=1,
+        rule_activation_entropy_weight=2e-4,
+        rule_anchor_stability_weight=2e-3,
+        concept_dropout_rate=0.08,
+        final_skip_input_count=16,
+        final_skip_gates_enabled=True,
+        final_skip_gate_init_logit=2.0,
     ),
     "quality_large_cls_v2": DfflProfile(
         name="quality_large_cls_v2",
         local_concepts=2,
         local_max_rules=10,
-        aggregate_max_rules=36,
-        decision_max_rules=18,
-        stage2_width_min=6,
-        stage2_width_max=14,
-        aggregate_block_count=3,
+        aggregate_max_rules=56,
+        decision_max_rules=24,
+        stage2_width_min=8,
+        stage2_width_max=20,
+        aggregate_block_count=4,
         aggregate_overlap=2,
-        aggregate_global_context_dim=8,
-        aggregate_global_max_rules=20,
+        aggregate_global_context_dim=12,
+        aggregate_global_max_rules=32,
         local_max_rule_arity=3,
         local_rule_generation_mode="prototype",
         aggregate_rule_generation_mode="prototype",
@@ -945,10 +1007,10 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_prototype_variable_pool_size=4,
         aggregate_prototype_term_limit=3,
         aggregate_prototype_scoring_mode="hybrid",
-        aggregate_prototype_variable_pool_size=20,
+        aggregate_prototype_variable_pool_size=24,
         decision_prototype_term_limit=3,
         decision_prototype_scoring_mode="hybrid",
-        decision_prototype_variable_pool_size=12,
+        decision_prototype_variable_pool_size=16,
         local_prototype_sample_size=1024,
         aggregate_prototype_sample_size=1024,
         decision_prototype_sample_size=1024,
@@ -965,19 +1027,96 @@ DFFL_PROFILES: dict[str, DfflProfile] = {
         local_consequent_mode="affine_sigmoid",
         aggregate_consequent_mode="affine_sigmoid",
         bridge_enabled=True,
-        bridge_top_pairs=20,
+        bridge_top_pairs=40,
         bridge_pair_score_alpha=0.7,
-        bridge_concepts=2,
-        bridge_concepts_max=3,
-        bridge_max_rules=10,
+        bridge_concepts=3,
+        bridge_concepts_max=5,
+        bridge_max_rules=16,
         bridge_prototype_term_limit=2,
         bridge_prototype_scoring_mode="hybrid",
         bridge_prototype_sample_size=1024,
+        bridge_max_pairs_per_feature=3,
+        bridge_max_pairs_per_group_pair=2,
         stagewise_rule_swap_ratio=0.2,
         stagewise_rule_swap_min_keep=8,
         block_agreement_weight=1.5e-3,
         block_agreement_target_corr=0.22,
         block_agreement_stage_limit=1,
+        final_skip_input_count=32,
+        final_skip_mode="target_corr_diverse",
+        final_skip_gates_enabled=True,
+        final_skip_gate_init_logit=2.0,
+    ),
+    "stability_large_cls": DfflProfile(
+        name="stability_large_cls",
+        local_concepts=2,
+        local_max_rules=10,
+        aggregate_max_rules=28,
+        decision_max_rules=14,
+        stage2_width_min=5,
+        stage2_width_max=12,
+        aggregate_block_count=2,
+        aggregate_overlap=1,
+        aggregate_global_context_dim=4,
+        aggregate_global_max_rules=14,
+        local_max_rule_arity=3,
+        local_rule_generation_mode="prototype",
+        aggregate_rule_generation_mode="prototype",
+        decision_rule_generation_mode="prototype",
+        aggregate_max_rule_arity=3,
+        decision_max_rule_arity=3,
+        learning_rate_scale_regression=0.95,
+        learning_rate_scale_classification=0.95,
+        refinement_cycle_floor=2,
+        pretrain_refinement_rounds=2,
+        top_k_rules=20,
+        input_group_size=4,
+        input_group_strategy="target_corr",
+        input_group_correlation_weight=0.8,
+        local_prototype_term_limit=3,
+        local_prototype_scoring_mode="max",
+        local_prototype_variable_pool_size=4,
+        aggregate_prototype_term_limit=3,
+        aggregate_prototype_scoring_mode="hybrid",
+        aggregate_prototype_variable_pool_size=16,
+        decision_prototype_term_limit=3,
+        decision_prototype_scoring_mode="hybrid",
+        decision_prototype_variable_pool_size=10,
+        local_prototype_sample_size=1024,
+        aggregate_prototype_sample_size=1024,
+        decision_prototype_sample_size=1024,
+        binary_auto_pos_weight=True,
+        binary_soft_f1_weight=0.2,
+        weight_decay=2e-5,
+        gradient_clip_norm=4.0,
+        rule_sparsity_weight=5e-5,
+        rule_length_weight=2e-5,
+        decision_usage_balance_weight=4e-3,
+        block_gates_enabled=True,
+        block_gate_init_logit=4.0,
+        block_gate_l1_weight=8e-5,
+        local_consequent_mode="affine_sigmoid",
+        aggregate_consequent_mode="affine_sigmoid",
+        bridge_enabled=True,
+        bridge_top_pairs=12,
+        bridge_pair_score_alpha=0.7,
+        bridge_concepts=1,
+        bridge_max_rules=8,
+        bridge_prototype_term_limit=2,
+        bridge_prototype_scoring_mode="hybrid",
+        bridge_prototype_sample_size=1024,
+        stagewise_rule_swap_ratio=0.0,
+        stagewise_rule_swap_min_keep=14,
+        block_agreement_weight=2e-3,
+        block_agreement_target_corr=0.25,
+        block_agreement_stage_limit=1,
+        rule_activation_entropy_weight=4e-4,
+        rule_anchor_stability_weight=4e-3,
+        concept_dropout_rate=0.10,
+        final_skip_input_count=20,
+        final_skip_mode="target_corr_diverse",
+        final_skip_gates_enabled=True,
+        final_skip_gate_init_logit=2.0,
     ),
 }
 
@@ -990,12 +1129,13 @@ def resolve_dffl_profile(
     input_dim: int | None = None,
 ) -> DfflProfile:
     if profile_name == "quality_auto":
-        # Large high-dimensional binary tasks can benefit from less bottlenecked v2 profile.
+        # Very large high-dimensional binary tasks can benefit from less bottlenecked v2 profile.
+        # For mid-size regimes (e.g., covtype_binary_20000), v2 is often too heavy and less stable.
         if (
             task_type == "binary_classification"
             and input_dim is not None
             and input_dim >= 40
-            and n_samples >= 20_000
+            and n_samples >= 50_000
         ):
             return DFFL_PROFILES["quality_large_cls_v2"]
         # Large binary datasets need slightly larger rule budgets than compact large-cls.
@@ -2033,9 +2173,9 @@ def _resolve_dffl_effective_rule_budgets(
 
     decision_cap = int(profile.decision_max_rules)
     if n_local_groups >= 12 and input_dim >= 40:
-        # Keep decision layer compact on high-dimensional tasks, but avoid
-        # over-tight caps that underfit long-range interactions.
-        decision_cap = min(decision_cap, 14)
+        # Keep decision layer controlled on high-dimensional tasks, but
+        # allow a wider cap than legacy settings to reduce late-stage bottlenecking.
+        decision_cap = min(decision_cap, 20)
 
     aggregate_cap_total = int(profile.aggregate_max_rules)
     if profile.aggregate_global_context_dim > 0:
@@ -2091,7 +2231,7 @@ def _resolve_dffl_effective_rule_budgets(
         budget_total = min(cap_total, min_total)
         allocation_policy = f"{allocation_policy}_raised_to_min"
     if high_dim_compact:
-        high_dim_soft_cap = min(cap_total, max(152, min(196, 10 * n_local_groups + 20)))
+        high_dim_soft_cap = min(cap_total, max(176, min(236, 11 * n_local_groups + 24)))
         if budget_total > high_dim_soft_cap:
             budget_total = high_dim_soft_cap
             allocation_policy = f"{allocation_policy}+highdim_cap{int(high_dim_soft_cap)}"
@@ -2691,6 +2831,143 @@ def _resolve_stacked_final_skip_indices(
         selected.append(int(best_index))
         remaining.remove(best_index)
     return tuple(selected)
+
+
+def _make_kanfis_pair_indices(
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    *,
+    max_pairs: int = 24,
+) -> tuple[tuple[int, int], ...]:
+    relevance = _feature_target_relevance(train_inputs, train_targets)
+    values = train_inputs.detach().float().cpu()
+    near_binary = (((values - 0.0).abs() < 1e-5) | ((values - 1.0).abs() < 1e-5)).float().mean(dim=0) > 0.995
+    relevance_order = [int(index) for index in np.argsort(-np.asarray(relevance, dtype=np.float64), kind="stable").tolist()]
+    non_binary = [index for index in relevance_order if not bool(near_binary[index])]
+    ranked = non_binary if len(non_binary) >= 2 else relevance_order
+    top_features = tuple(ranked[: min(10, int(train_inputs.shape[1]))])
+    candidates: list[tuple[float, int, int]] = []
+    for left_pos, left in enumerate(top_features):
+        for right in top_features[left_pos + 1 :]:
+            score = float(relevance[left] + relevance[right])
+            candidates.append((score, int(left), int(right)))
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return tuple((left, right) for _, left, right in candidates[: max(0, int(max_pairs))])
+
+
+def _make_kanfis_projection_indices(
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    *,
+    projection_count: int = 8,
+    projection_width: int = 3,
+    mode: str = "ranked",
+) -> tuple[tuple[int, ...], ...]:
+    count = max(0, int(projection_count))
+    width = max(1, int(projection_width))
+    if count <= 0:
+        return ()
+    normalized_mode = str(mode).strip().lower()
+    if normalized_mode == "fixed_covtype" and int(train_inputs.shape[1]) == 54:
+        base_routes = (
+            (9, 8, 42, 17),
+            (0, 4, 53, 19),
+            (7, 13, 36, 24),
+            (2, 25, 26, 14),
+            (3, 35, 43, 48),
+            (6, 10, 23, 45),
+            (5, 51, 11, 31),
+            (1, 52, 15, 18),
+            (9, 0, 7, 2),
+            (3, 6, 5, 1),
+            (13, 25, 35, 51),
+            (52, 36, 42, 53),
+        )
+        return tuple(tuple(route[:width]) for route in base_routes[:count])
+    relevance = _feature_target_relevance(train_inputs, train_targets)
+    values = train_inputs.detach().float().cpu()
+    near_binary = (((values - 0.0).abs() < 1e-5) | ((values - 1.0).abs() < 1e-5)).float().mean(dim=0) > 0.995
+    order = [int(index) for index in np.argsort(-np.asarray(relevance, dtype=np.float64), kind="stable").tolist()]
+    continuous = [index for index in order if not bool(near_binary[index])]
+    binary = [index for index in order if bool(near_binary[index])]
+    ranked = continuous + binary
+    if not ranked:
+        return ()
+    routes: list[tuple[int, ...]] = []
+    for route_index in range(count):
+        route = []
+        for offset in range(width):
+            route.append(ranked[(route_index + offset * max(1, count)) % len(ranked)])
+        routes.append(tuple(dict.fromkeys(route)))
+    return tuple(routes)
+
+
+def _make_kanfis_active_feature_indices(
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    *,
+    max_features: int = 8,
+    feature_importances: tuple[float, ...] | list[float] | None = None,
+) -> tuple[int, ...]:
+    if feature_importances is not None and len(feature_importances) == int(train_inputs.shape[1]):
+        requested = min(max(1, int(max_features)), int(train_inputs.shape[1]))
+        ranked = np.argsort(-np.asarray(feature_importances, dtype=np.float64), kind="stable")
+        return tuple(int(index) for index in ranked[:requested])
+    return _resolve_stacked_final_skip_indices(
+        train_inputs=train_inputs,
+        train_targets=train_targets,
+        count=min(max(1, int(max_features)), int(train_inputs.shape[1])),
+        mode="target_corr_diverse",
+    )
+
+
+def build_kanfis_model(
+    input_dim: int,
+    *,
+    pair_indices: tuple[tuple[int, int], ...] = (),
+    projection_indices: tuple[tuple[int, ...], ...] = (),
+    active_feature_indices: tuple[int, ...] | None = None,
+    superposition_terms: int = 16,
+    depth: int = 1,
+    concept_fan_in: int = 0,
+    routing: str = "chunk",
+    decision_skip_indices: tuple[int, ...] = (),
+    train_rule_gates: bool = False,
+    decision_skip_gate_init_logit: float = 1.5,
+) -> KANFISModel:
+    if depth >= 2:
+        first_width = max(2, int(superposition_terms))
+        concept_depth = max(2, int(depth))
+        concept_widths = [first_width, max(2, min(6, first_width))]
+        while len(concept_widths) < concept_depth:
+            width = round(concept_widths[-1] * 0.75)
+            concept_widths.append(max(2, min(first_width, int(width))))
+        return DeepKANFISModel(
+            input_dim=input_dim,
+            concept_widths=tuple(concept_widths),
+            term_centers=(0.2, 0.5, 0.8),
+            term_width=0.18,
+            active_feature_indices=active_feature_indices,
+            pair_indices=pair_indices,
+            projection_indices=projection_indices,
+            first_layer_fan_in=concept_fan_in,
+            first_layer_routing=routing,
+            decision_skip_indices=decision_skip_indices,
+            output_dim=1,
+            train_rule_gates=train_rule_gates,
+            decision_skip_gate_init_logit=decision_skip_gate_init_logit,
+        )
+    # Cap the Kolmogorov-style 2n+1 width so high-dimensional tabular runs stay lightweight.
+    return KANFISModel(
+        input_dim=input_dim,
+        superposition_terms=min(2 * input_dim + 1, max(1, int(superposition_terms))),
+        term_centers=(0.2, 0.5, 0.8),
+        term_width=0.18,
+        pair_indices=pair_indices,
+        active_feature_indices=active_feature_indices,
+        output_dim=1,
+        train_rule_gates=train_rule_gates,
+    )
 
 
 def build_hierarchical_anfis_config(
@@ -3481,7 +3758,7 @@ def _build_binary_distillation_targets(
     seed: int,
     teacher_trees: int,
     blend_weight: float,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     if teacher_trees <= 0:
         raise ValueError("fuzzy_distill_teacher_trees must be positive.")
     if not (0.0 < blend_weight <= 1.0):
@@ -3495,6 +3772,7 @@ def _build_binary_distillation_targets(
             "teacher_trees": float(teacher_trees),
             "teacher_val_f1": float("nan"),
             "teacher_val_auc": float("nan"),
+            "teacher_feature_importances": [],
         }
 
     teacher = ExtraTreesClassifier(
@@ -3528,6 +3806,7 @@ def _build_binary_distillation_targets(
         "blend_weight": float(blend_weight),
         "train_target_mean_before": float(train_targets.mean().item()),
         "train_target_mean_after": float(blended_targets.mean().item()),
+        "teacher_feature_importances": teacher.feature_importances_.astype(float).tolist(),
     }
     return blended_targets.to(dtype=train_targets.dtype), metadata
 
@@ -3853,6 +4132,25 @@ def run_single_seed_dataset_benchmark(
     fuzzy_hard_sample_finetune_epochs: int,
     fuzzy_hard_sample_finetune_patience: int,
     fuzzy_hard_sample_teacher_trees: int,
+    kanfis_active_features: int,
+    kanfis_depth: int,
+    kanfis_superposition_terms: int,
+    kanfis_concept_fan_in: int,
+    kanfis_routing: str,
+    kanfis_feature_order: str,
+    kanfis_decision_skip_features: int,
+    kanfis_pair_count: int,
+    kanfis_projection_count: int,
+    kanfis_projection_width: int,
+    kanfis_projection_mode: str,
+    kanfis_prune_rules: int,
+    kanfis_recovery_epochs: int,
+    kanfis_polish_epochs: int,
+    kanfis_train_rule_gates: bool,
+    kanfis_rule_sparsity_weight: float,
+    kanfis_rule_entropy_weight: float,
+    kanfis_rule_anchor_weight: float,
+    kanfis_skip_gate_l1_weight: float,
     batch_size: int,
     patience: int,
     classification_threshold: float,
@@ -3913,7 +4211,7 @@ def run_single_seed_dataset_benchmark(
         )
 
     model_train_targets: dict[str, torch.Tensor] = {model_name: train_targets for model_name in FUZZY_MODEL_NAMES}
-    distillation_metadata: dict[str, float] = {}
+    distillation_metadata: dict[str, Any] = {}
     if (
         spec.task_type == "binary_classification"
         and fuzzy_distill_weight > 0.0
@@ -4216,6 +4514,7 @@ def run_single_seed_dataset_benchmark(
             n_samples=split.n_samples,
             intergroup_interaction_share=dffl_intergroup_share,
         )
+        is_covtype_binary = _is_covtype_binary_dataset(spec.name)
         dffl_binary_feature_indices = _detect_binary_feature_indices(analysis_train_inputs)
         if dffl_profile.final_skip_input_indices:
             dffl_final_skip_indices = tuple(int(index) for index in dffl_profile.final_skip_input_indices)
@@ -4340,11 +4639,19 @@ def run_single_seed_dataset_benchmark(
         if int(split.input_dim) >= 40 or int(split.n_samples) >= 100_000:
             # Reduce overhead of expensive correlation/usage regularizers on large-scale runs.
             dffl_regularizer_cadence = 4
+        dffl_patience_effective = min(patience, max_epochs)
+        dffl_min_delta = 0.0
+        if spec.task_type == "binary_classification" and is_covtype_binary:
+            # Covtype is noisy under long tails of small F1 oscillations.
+            # Slightly stricter early stopping improves consistency.
+            dffl_patience_effective = min(dffl_patience_effective, max(8, max_epochs // 2))
+            dffl_min_delta = 5e-4
         dffl_training_config_base = TrainingConfig(
             task_type=spec.task_type,
             max_epochs=max_epochs,
             learning_rate=dffl_learning_rate_effective,
-            patience=min(patience, max_epochs),
+            patience=dffl_patience_effective,
+            min_delta=dffl_min_delta,
             batch_size=batch_size,
             shuffle=dffl_shuffle_effective,
             amp_enabled=amp_enabled,
@@ -4382,6 +4689,8 @@ def run_single_seed_dataset_benchmark(
             decision_usage_balance_weight=dffl_profile.decision_usage_balance_weight,
             decision_usage_balance_every_n_steps=dffl_regularizer_cadence,
             block_gate_l1_weight=dffl_profile.block_gate_l1_weight,
+            rule_activation_entropy_weight=dffl_profile.rule_activation_entropy_weight,
+            rule_anchor_stability_weight=dffl_profile.rule_anchor_stability_weight,
             block_agreement_weight=dffl_block_agreement_weight,
             block_agreement_every_n_steps=dffl_regularizer_cadence,
             block_agreement_target_corr=dffl_block_agreement_target_corr,
@@ -4450,6 +4759,7 @@ def run_single_seed_dataset_benchmark(
                         bootstrap_config=dffl_bootstrap_config,
                         device=device,
                     )
+                    candidate_model.concept_dropout_rate = float(dffl_profile.concept_dropout_rate)
                     dffl_trainer = FuzzyTrainer(candidate_model, candidate_training_config)
                     dffl_trainer.fit(train_inputs, dffl_train_targets, validation_inputs, validation_targets)
                 else:
@@ -4482,6 +4792,7 @@ def run_single_seed_dataset_benchmark(
                         ),
                     )
                     candidate_model = dffl_result.model
+                    candidate_model.concept_dropout_rate = float(dffl_profile.concept_dropout_rate)
 
                 candidate_postprocessor: Callable[[torch.Tensor], torch.Tensor] | None = None
                 calibration_method = "none"
@@ -4590,8 +4901,20 @@ def run_single_seed_dataset_benchmark(
                     score=best_val_score,
                 )
             )
+        if (
+            fuzzy_hard_sample_training
+            and "ruanfis_refined_deep" in hard_sample_enabled_models
+            and _is_covtype_binary_dataset(spec.name)
+        ):
+            progress_log(
+                "seed={seed} model=dffl: hard_finetune disabled for covtype policy".format(seed=seed)
+            )
         _maybe_run_hard_sample_finetune(
-            enabled=fuzzy_hard_sample_training and "ruanfis_refined_deep" in hard_sample_enabled_models,
+            enabled=(
+                fuzzy_hard_sample_training
+                and "ruanfis_refined_deep" in hard_sample_enabled_models
+                and not _is_covtype_binary_dataset(spec.name)
+            ),
             model_name="ruanfis_refined_deep",
             model=best_model,
             task_type=spec.task_type,
@@ -4780,6 +5103,214 @@ def run_single_seed_dataset_benchmark(
         model_top_k_rules["ruanfis_stacked_anfis"] = None
         model_prediction_postprocessors["ruanfis_stacked_anfis"] = None
         progress_log(f"seed={seed} model=stacked: done in {time.perf_counter() - phase_started_at:.2f}s")
+
+    if "ruanfis_kanfis" in fuzzy_models:
+        phase_started_at = time.perf_counter()
+        progress_log(f"seed={seed} model=kanfis: build+train start")
+        kanfis_active_feature_indices = _make_kanfis_active_feature_indices(
+            train_inputs,
+            train_targets,
+            max_features=split.input_dim if kanfis_active_features <= 0 else min(kanfis_active_features, split.input_dim),
+            feature_importances=(
+                distillation_metadata.get("teacher_feature_importances")
+                if str(kanfis_feature_order).strip().lower() == "teacher_importance"
+                else None
+            ),
+        )
+        kanfis_pair_indices = _make_kanfis_pair_indices(
+            train_inputs,
+            train_targets,
+            max_pairs=max(0, int(kanfis_pair_count)),
+        )
+        kanfis_projection_indices = _make_kanfis_projection_indices(
+            train_inputs,
+            train_targets,
+            projection_count=max(0, int(kanfis_projection_count)),
+            projection_width=max(1, int(kanfis_projection_width)),
+            mode=str(kanfis_projection_mode),
+        )
+        progress_log(
+            "seed={seed} model=kanfis: active_features={features}".format(
+                seed=seed,
+                features=",".join(str(index) for index in kanfis_active_feature_indices),
+            )
+        )
+        if kanfis_pair_indices:
+            progress_log(
+                "seed={seed} model=kanfis: pair_channels={pairs}".format(
+                    seed=seed,
+                    pairs=",".join(f"{left}-{right}" for left, right in kanfis_pair_indices),
+                )
+            )
+        if kanfis_projection_indices:
+            progress_log(
+                "seed={seed} model=kanfis: projection_channels={routes}".format(
+                    seed=seed,
+                    routes=";".join(",".join(str(index) for index in route) for route in kanfis_projection_indices),
+                )
+            )
+        kanfis_decision_skip_indices = tuple(
+            kanfis_active_feature_indices[: max(0, min(int(kanfis_decision_skip_features), split.input_dim))]
+        )
+        kanfis_model = build_kanfis_model(
+            split.input_dim,
+            pair_indices=kanfis_pair_indices,
+            projection_indices=kanfis_projection_indices,
+            active_feature_indices=kanfis_active_feature_indices,
+            superposition_terms=kanfis_superposition_terms,
+            depth=kanfis_depth,
+            concept_fan_in=kanfis_concept_fan_in,
+            routing=kanfis_routing,
+            decision_skip_indices=kanfis_decision_skip_indices,
+            train_rule_gates=bool(kanfis_train_rule_gates),
+            decision_skip_gate_init_logit=2.0,
+        ).to(device=device)
+        if hasattr(kanfis_model, "set_feature_names"):
+            kanfis_model.set_feature_names(_dataset_feature_names(spec.name, split.input_dim))
+        if hasattr(kanfis_model, "fit_membership_terms"):
+            kanfis_model.fit_membership_terms(train_inputs)
+        kanfis_training_config = TrainingConfig(
+            task_type=spec.task_type,
+            max_epochs=max_epochs,
+            learning_rate=fuzzy_learning_rate,
+            patience=min(patience, max_epochs),
+            batch_size=batch_size,
+            shuffle=True,
+            amp_enabled=amp_enabled,
+            classification_threshold=classification_threshold,
+            binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
+            binary_loss_name=fuzzy_binary_loss_name,
+            binary_focal_gamma=fuzzy_binary_focal_gamma,
+            binary_soft_f1_weight=(
+                fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
+            ),
+            regression_loss=fuzzy_regression_loss,
+            huber_delta=fuzzy_huber_delta,
+            regression_linear_residual_head=False,
+            monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+            monitor_mode="max" if spec.task_type == "binary_classification" else None,
+            weight_decay=1e-5,
+            gradient_clip_norm=5.0,
+            rule_sparsity_weight=max(0.0, float(kanfis_rule_sparsity_weight)),
+            rule_activation_entropy_weight=max(0.0, float(kanfis_rule_entropy_weight)),
+            rule_anchor_stability_weight=max(0.0, float(kanfis_rule_anchor_weight)),
+            block_gate_l1_weight=max(0.0, float(kanfis_skip_gate_l1_weight)),
+            regularization_warmup_epochs=max(1, max_epochs // 4),
+            verbose=bool(log_epochs),
+            log_every_n_epochs=max(1, int(log_epochs_every)),
+            log_prefix=f"seed={seed} model=kanfis",
+            device=device,
+        )
+        kanfis_trainer = FuzzyTrainer(kanfis_model, kanfis_training_config)
+        kanfis_trainer.fit(
+            train_inputs,
+            model_train_targets["ruanfis_kanfis"],
+            validation_inputs,
+            validation_targets,
+        )
+        if kanfis_prune_rules > 0:
+            pruned_rule_count = kanfis_model.prune_to_top_k_rules(
+                int(kanfis_prune_rules),
+                inputs=train_inputs,
+                batch_size=8192,
+            )
+            progress_log(f"seed={seed} model=kanfis: pruned_active_rules={pruned_rule_count}")
+            if kanfis_recovery_epochs > 0:
+                kanfis_recovery_config = TrainingConfig(
+                    task_type=spec.task_type,
+                    max_epochs=int(kanfis_recovery_epochs),
+                    learning_rate=fuzzy_learning_rate * 0.35,
+                    patience=min(4, max(2, patience)),
+                    batch_size=batch_size,
+                    shuffle=True,
+                    amp_enabled=amp_enabled,
+                    classification_threshold=classification_threshold,
+                    binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
+                    binary_loss_name=fuzzy_binary_loss_name,
+                    binary_focal_gamma=fuzzy_binary_focal_gamma,
+                    binary_soft_f1_weight=(
+                        fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
+                    ),
+                    regression_loss=fuzzy_regression_loss,
+                    huber_delta=fuzzy_huber_delta,
+                    monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+                    monitor_mode="max" if spec.task_type == "binary_classification" else None,
+                    weight_decay=1e-5,
+                    gradient_clip_norm=5.0,
+                    rule_sparsity_weight=max(0.0, float(kanfis_rule_sparsity_weight)),
+                    rule_activation_entropy_weight=max(0.0, float(kanfis_rule_entropy_weight)),
+                    rule_anchor_stability_weight=max(0.0, float(kanfis_rule_anchor_weight)),
+                    block_gate_l1_weight=max(0.0, float(kanfis_skip_gate_l1_weight)),
+                    regularization_warmup_epochs=max(1, int(kanfis_recovery_epochs) // 2),
+                    verbose=False,
+                    log_prefix=f"seed={seed} model=kanfis-recovery",
+                    device=device,
+                )
+                FuzzyTrainer(kanfis_model, kanfis_recovery_config).fit(
+                    train_inputs,
+                    model_train_targets["ruanfis_kanfis"],
+                    validation_inputs,
+                    validation_targets,
+                )
+        if kanfis_polish_epochs > 0:
+            kanfis_polish_config = TrainingConfig(
+                task_type=spec.task_type,
+                max_epochs=int(kanfis_polish_epochs),
+                learning_rate=fuzzy_learning_rate * 0.2,
+                patience=min(4, max(2, patience)),
+                batch_size=batch_size,
+                shuffle=True,
+                amp_enabled=amp_enabled,
+                classification_threshold=classification_threshold,
+                binary_auto_pos_weight=spec.task_type == "binary_classification" and fuzzy_binary_auto_pos_weight,
+                binary_loss_name=fuzzy_binary_loss_name,
+                binary_focal_gamma=fuzzy_binary_focal_gamma,
+                binary_soft_f1_weight=(
+                    fuzzy_binary_soft_f1_weight if spec.task_type == "binary_classification" else 0.0
+                ),
+                regression_loss=fuzzy_regression_loss,
+                huber_delta=fuzzy_huber_delta,
+                monitor_metric="f1" if spec.task_type == "binary_classification" else None,
+                monitor_mode="max" if spec.task_type == "binary_classification" else None,
+                weight_decay=1e-5,
+                gradient_clip_norm=5.0,
+                rule_sparsity_weight=max(0.0, float(kanfis_rule_sparsity_weight)),
+                rule_activation_entropy_weight=max(0.0, float(kanfis_rule_entropy_weight)),
+                rule_anchor_stability_weight=max(0.0, float(kanfis_rule_anchor_weight)),
+                block_gate_l1_weight=max(0.0, float(kanfis_skip_gate_l1_weight)),
+                regularization_warmup_epochs=max(1, int(kanfis_polish_epochs) // 2),
+                verbose=False,
+                log_prefix=f"seed={seed} model=kanfis-polish",
+                device=device,
+            )
+            FuzzyTrainer(kanfis_model, kanfis_polish_config).fit(
+                train_inputs,
+                train_targets,
+                validation_inputs,
+                validation_targets,
+            )
+        _maybe_run_hard_sample_finetune(
+            enabled=fuzzy_hard_sample_training and "ruanfis_kanfis" in hard_sample_enabled_models,
+            model_name="ruanfis_kanfis",
+            model=kanfis_model,
+            task_type=spec.task_type,
+            train_inputs=train_inputs,
+            train_targets=model_train_targets["ruanfis_kanfis"],
+            validation_inputs=validation_inputs,
+            validation_targets=validation_targets,
+            base_training_config=kanfis_training_config,
+            source=fuzzy_hard_sample_source,
+            hard_fraction=fuzzy_hard_sample_fraction,
+            hard_multiplier=fuzzy_hard_sample_multiplier,
+            finetune_epochs=fuzzy_hard_sample_finetune_epochs,
+            finetune_patience=fuzzy_hard_sample_finetune_patience,
+            baseline_hard_indices=baseline_hard_indices,
+            seed=seed,
+        )
+        trained_fuzzy_models["ruanfis_kanfis"] = kanfis_model
+        model_top_k_rules["ruanfis_kanfis"] = None
+        model_prediction_postprocessors["ruanfis_kanfis"] = None
+        progress_log(f"seed={seed} model=kanfis: done in {time.perf_counter() - phase_started_at:.2f}s")
 
     if "ruanfis_hierarchical_anfis" in fuzzy_models:
         phase_started_at = time.perf_counter()
@@ -5425,6 +5956,25 @@ def build_reproducibility_manifest_payload(
                 "fuzzy_hard_sample_finetune_epochs": int(args.fuzzy_hard_sample_finetune_epochs),
                 "fuzzy_hard_sample_finetune_patience": int(args.fuzzy_hard_sample_finetune_patience),
                 "fuzzy_hard_sample_teacher_trees": int(args.fuzzy_hard_sample_teacher_trees),
+                "kanfis_active_features": int(args.kanfis_active_features),
+                "kanfis_depth": int(args.kanfis_depth),
+                "kanfis_superposition_terms": int(args.kanfis_superposition_terms),
+                "kanfis_concept_fan_in": int(args.kanfis_concept_fan_in),
+                "kanfis_routing": str(args.kanfis_routing),
+                "kanfis_feature_order": str(args.kanfis_feature_order),
+                "kanfis_decision_skip_features": int(args.kanfis_decision_skip_features),
+                "kanfis_pair_count": int(args.kanfis_pair_count),
+                "kanfis_projection_count": int(args.kanfis_projection_count),
+                "kanfis_projection_width": int(args.kanfis_projection_width),
+                "kanfis_projection_mode": str(args.kanfis_projection_mode),
+                "kanfis_prune_rules": int(args.kanfis_prune_rules),
+                "kanfis_recovery_epochs": int(args.kanfis_recovery_epochs),
+                "kanfis_polish_epochs": int(args.kanfis_polish_epochs),
+                "kanfis_train_rule_gates": bool(args.kanfis_train_rule_gates),
+                "kanfis_rule_sparsity_weight": float(args.kanfis_rule_sparsity_weight),
+                "kanfis_rule_entropy_weight": float(args.kanfis_rule_entropy_weight),
+                "kanfis_rule_anchor_weight": float(args.kanfis_rule_anchor_weight),
+                "kanfis_skip_gate_l1_weight": float(args.kanfis_skip_gate_l1_weight),
                 "hidden_output_activation": str(args.hidden_output_activation),
                 "stacked_stagewise_init": bool(args.stacked_stagewise_init),
                 "stacked_stagewise_init_epochs": int(args.stacked_stagewise_init_epochs),
@@ -5936,6 +6486,122 @@ def main() -> None:
         help="Number of trees in ExtraTrees teacher used for distillation.",
     )
     parser.add_argument(
+        "--kanfis-active-features",
+        type=int,
+        default=0,
+        help="KANFIS predicate dictionary feature count; 0 uses all features.",
+    )
+    parser.add_argument(
+        "--kanfis-depth",
+        type=int,
+        default=1,
+        help="KANFIS depth: 1 is shallow additive KA-FIS, >=2 is deep interpretable KA-FIS.",
+    )
+    parser.add_argument(
+        "--kanfis-superposition-terms",
+        type=int,
+        default=16,
+        help="KANFIS additive superposition width.",
+    )
+    parser.add_argument(
+        "--kanfis-concept-fan-in",
+        type=int,
+        default=0,
+        help="Deep KANFIS routed first-layer fan-in per concept; 0 connects every concept to every selected feature.",
+    )
+    parser.add_argument(
+        "--kanfis-routing",
+        type=str,
+        default="chunk",
+        choices=("chunk", "banded", "grouped"),
+        help="Deep KANFIS first-layer routing strategy.",
+    )
+    parser.add_argument(
+        "--kanfis-feature-order",
+        type=str,
+        default="target_corr_diverse",
+        choices=("target_corr_diverse", "teacher_importance"),
+        help="Feature ordering used before KANFIS routing.",
+    )
+    parser.add_argument(
+        "--kanfis-decision-skip-features",
+        type=int,
+        default=0,
+        help="Transparent raw-feature evidence channels appended to the final KANFIS decision layer.",
+    )
+    parser.add_argument(
+        "--kanfis-pair-count",
+        type=int,
+        default=0,
+        help="Number of target-relevant pair predicate channels for KANFIS.",
+    )
+    parser.add_argument(
+        "--kanfis-projection-count",
+        type=int,
+        default=0,
+        help="Number of sparse projection-pursuit fuzzy channels for deep KANFIS.",
+    )
+    parser.add_argument(
+        "--kanfis-projection-width",
+        type=int,
+        default=3,
+        help="Number of source features per KANFIS projection-pursuit channel.",
+    )
+    parser.add_argument(
+        "--kanfis-projection-mode",
+        type=str,
+        default="ranked",
+        choices=("ranked", "fixed_covtype"),
+        help="How KANFIS projection-pursuit routes are generated.",
+    )
+    parser.add_argument(
+        "--kanfis-prune-rules",
+        type=int,
+        default=1024,
+        help="Post-train active KANFIS rule budget; <=0 disables pruning.",
+    )
+    parser.add_argument(
+        "--kanfis-recovery-epochs",
+        type=int,
+        default=12,
+        help="Short recovery fine-tune epochs after KANFIS pruning; <=0 disables recovery.",
+    )
+    parser.add_argument(
+        "--kanfis-polish-epochs",
+        type=int,
+        default=0,
+        help="Final KANFIS fine-tune epochs on true labels after distillation/recovery; <=0 disables.",
+    )
+    parser.add_argument(
+        "--kanfis-train-rule-gates",
+        action="store_true",
+        help="Allow KANFIS rule gates to learn; pair with sparsity/entropy/anchor regularization.",
+    )
+    parser.add_argument(
+        "--kanfis-rule-sparsity-weight",
+        type=float,
+        default=0.0,
+        help="KANFIS L1-style rule-gate sparsity weight.",
+    )
+    parser.add_argument(
+        "--kanfis-rule-entropy-weight",
+        type=float,
+        default=0.0,
+        help="KANFIS rule-gate entropy penalty weight for crisper active/inactive structure.",
+    )
+    parser.add_argument(
+        "--kanfis-rule-anchor-weight",
+        type=float,
+        default=0.0,
+        help="KANFIS rule-gate stability penalty weight around the current anchor.",
+    )
+    parser.add_argument(
+        "--kanfis-skip-gate-l1-weight",
+        type=float,
+        default=0.0,
+        help="L1 penalty for transparent KANFIS raw-feature skip gates.",
+    )
+    parser.add_argument(
         "--fuzzy-hard-sample-training",
         action="store_true",
         help="Enable second-stage hard-sample finetune for selected fuzzy models.",
@@ -6050,8 +6716,8 @@ def main() -> None:
         default="all",
         help=(
             "Comma-separated fuzzy models: all, "
-            "ruanfis_shallow, ruanfis_stacked_anfis, ruanfis_hierarchical_anfis, ruanfis_refined_deep "
-            "(aliases: shallow, stacked, hierarchical, dffl)."
+            "ruanfis_shallow, ruanfis_stacked_anfis, ruanfis_hierarchical_anfis, ruanfis_kanfis, "
+            "ruanfis_refined_deep (aliases: shallow, stacked, hierarchical, kanfis, ka_anfis, dffl)."
         ),
     )
     parser.add_argument(
@@ -6244,6 +6910,25 @@ def main() -> None:
                 fuzzy_hard_sample_finetune_epochs=int(args.fuzzy_hard_sample_finetune_epochs),
                 fuzzy_hard_sample_finetune_patience=int(args.fuzzy_hard_sample_finetune_patience),
                 fuzzy_hard_sample_teacher_trees=int(args.fuzzy_hard_sample_teacher_trees),
+                kanfis_active_features=int(args.kanfis_active_features),
+                kanfis_depth=int(args.kanfis_depth),
+                kanfis_superposition_terms=int(args.kanfis_superposition_terms),
+                kanfis_concept_fan_in=int(args.kanfis_concept_fan_in),
+                kanfis_routing=str(args.kanfis_routing),
+                kanfis_feature_order=str(args.kanfis_feature_order),
+                kanfis_decision_skip_features=int(args.kanfis_decision_skip_features),
+                kanfis_pair_count=int(args.kanfis_pair_count),
+                kanfis_projection_count=int(args.kanfis_projection_count),
+                kanfis_projection_width=int(args.kanfis_projection_width),
+                kanfis_projection_mode=str(args.kanfis_projection_mode),
+                kanfis_prune_rules=int(args.kanfis_prune_rules),
+                kanfis_recovery_epochs=int(args.kanfis_recovery_epochs),
+                kanfis_polish_epochs=int(args.kanfis_polish_epochs),
+                kanfis_train_rule_gates=bool(args.kanfis_train_rule_gates),
+                kanfis_rule_sparsity_weight=float(args.kanfis_rule_sparsity_weight),
+                kanfis_rule_entropy_weight=float(args.kanfis_rule_entropy_weight),
+                kanfis_rule_anchor_weight=float(args.kanfis_rule_anchor_weight),
+                kanfis_skip_gate_l1_weight=float(args.kanfis_skip_gate_l1_weight),
                 batch_size=args.batch_size,
                 patience=args.patience,
                 classification_threshold=args.classification_threshold,
@@ -6454,6 +7139,25 @@ def main() -> None:
         f"fuzzy_hard_sample_finetune_epochs: {args.fuzzy_hard_sample_finetune_epochs}",
         f"fuzzy_hard_sample_finetune_patience: {args.fuzzy_hard_sample_finetune_patience}",
         f"fuzzy_hard_sample_teacher_trees: {args.fuzzy_hard_sample_teacher_trees}",
+        f"kanfis_active_features: {args.kanfis_active_features}",
+        f"kanfis_depth: {args.kanfis_depth}",
+        f"kanfis_superposition_terms: {args.kanfis_superposition_terms}",
+        f"kanfis_concept_fan_in: {args.kanfis_concept_fan_in}",
+        f"kanfis_routing: {args.kanfis_routing}",
+        f"kanfis_feature_order: {args.kanfis_feature_order}",
+        f"kanfis_decision_skip_features: {args.kanfis_decision_skip_features}",
+        f"kanfis_pair_count: {args.kanfis_pair_count}",
+        f"kanfis_projection_count: {args.kanfis_projection_count}",
+        f"kanfis_projection_width: {args.kanfis_projection_width}",
+        f"kanfis_projection_mode: {args.kanfis_projection_mode}",
+        f"kanfis_prune_rules: {args.kanfis_prune_rules}",
+        f"kanfis_recovery_epochs: {args.kanfis_recovery_epochs}",
+        f"kanfis_polish_epochs: {args.kanfis_polish_epochs}",
+        f"kanfis_train_rule_gates: {args.kanfis_train_rule_gates}",
+        f"kanfis_rule_sparsity_weight: {args.kanfis_rule_sparsity_weight}",
+        f"kanfis_rule_entropy_weight: {args.kanfis_rule_entropy_weight}",
+        f"kanfis_rule_anchor_weight: {args.kanfis_rule_anchor_weight}",
+        f"kanfis_skip_gate_l1_weight: {args.kanfis_skip_gate_l1_weight}",
         f"hidden_output_activation: {args.hidden_output_activation}",
         f"stacked_stagewise_init: {args.stacked_stagewise_init}",
         f"stacked_stagewise_init_epochs: {args.stacked_stagewise_init_epochs}",

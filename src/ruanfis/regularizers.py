@@ -16,11 +16,22 @@ def _zero_for(module: nn.Module) -> Tensor:
         return torch.tensor(0.0)
 
 
-def rule_sparsity_penalty(module: nn.Module) -> Tensor:
-    total = _zero_for(module)
+def _iter_rule_probability_tensors(module: nn.Module):
     for submodule in module.modules():
         if isinstance(submodule, BaseFuzzyRuleLayer):
-            total = total + torch.sigmoid(submodule.rule_logits).sum()
+            yield submodule.rule_probabilities
+            continue
+        rule_probabilities = getattr(submodule, "rule_probabilities", None)
+        if rule_probabilities is None:
+            continue
+        if isinstance(rule_probabilities, Tensor):
+            yield rule_probabilities
+
+
+def rule_sparsity_penalty(module: nn.Module) -> Tensor:
+    total = _zero_for(module)
+    for probabilities in _iter_rule_probability_tensors(module):
+        total = total + probabilities.sum()
     return total
 
 
@@ -152,4 +163,32 @@ def block_gate_l1_penalty(module: nn.Module) -> Tensor:
         final_skip_gate_logits = getattr(submodule, "final_skip_gate_logits", None)
         if final_skip_gate_logits is not None:
             total = total + torch.sigmoid(final_skip_gate_logits).sum()
+    return total
+
+
+def rule_activation_entropy_penalty(module: nn.Module, epsilon: float = 1e-8) -> Tensor:
+    total = _zero_for(module)
+    eps = float(max(epsilon, 1e-12))
+    for probabilities in _iter_rule_probability_tensors(module):
+        probs = probabilities.clamp(min=eps, max=1.0 - eps)
+        entropy = -(probs * torch.log(probs) + (1.0 - probs) * torch.log(1.0 - probs))
+        total = total + entropy.mean()
+    return total
+
+
+def rule_anchor_stability_penalty(module: nn.Module) -> Tensor:
+    total = _zero_for(module)
+    for submodule in module.modules():
+        anchor = getattr(submodule, "rule_probability_anchor", None)
+        if anchor is None:
+            continue
+        probs = getattr(submodule, "rule_probabilities", None)
+        if probs is None:
+            continue
+        if not isinstance(probs, Tensor):
+            continue
+        anchor_tensor = anchor.to(device=probs.device, dtype=probs.dtype)
+        if anchor_tensor.shape != probs.shape:
+            continue
+        total = total + F.mse_loss(probs, anchor_tensor, reduction="mean")
     return total

@@ -241,21 +241,20 @@ def generate_prototype_rule_base(
         top_term_values.append(values)
         top_term_indices.append(indices)
 
-    candidate_stats: dict[tuple[Antecedent, ...], tuple[float, float, int]] = {}
+    candidate_stats: dict[tuple[tuple[int, int], ...], tuple[float, float, int]] = {}
     sample_count = inputs.size(0)
+    top_strength_matrix = torch.stack([values[:, 0] for values in top_term_values], dim=1).to(dtype=torch.float32)
+    variable_indices = torch.arange(
+        len(variables),
+        device=top_strength_matrix.device,
+        dtype=top_strength_matrix.dtype,
+    )
+    # Deterministic tie-break: prefer lower feature index when strengths are equal.
+    adjusted_strengths = top_strength_matrix - (1e-7 * variable_indices.unsqueeze(0))
+    pooled_variable_orders = torch.argsort(adjusted_strengths, dim=1, descending=True)
+
     for sample_index in range(sample_count):
-        variable_strengths = torch.tensor(
-            [top_term_values[variable_index][sample_index, 0].item() for variable_index in range(len(variables))],
-            dtype=torch.float32,
-        )
-        variable_indices = torch.arange(
-            len(variables),
-            device=variable_strengths.device,
-            dtype=variable_strengths.dtype,
-        )
-        # Deterministic tie-break: prefer lower feature index when strengths are equal.
-        adjusted_strengths = variable_strengths - (1e-7 * variable_indices)
-        pooled_variables = torch.argsort(adjusted_strengths, descending=True).tolist()[:pool_size]
+        pooled_variables = pooled_variable_orders[sample_index, :pool_size].tolist()
 
         for arity in range(1, max_arity + 1):
             for variable_indices in combinations(pooled_variables, arity):
@@ -273,16 +272,13 @@ def generate_prototype_rule_base(
                         term_index = int(term_index_options[local_index][choice_index])
                         score *= float(term_value_options[local_index][choice_index])
                         antecedent_pairs.append((int(variable_index), term_index))
-                    antecedents = tuple(
-                        Antecedent(variable_index=variable_index, term_index=term_index)
-                        for variable_index, term_index in sorted(antecedent_pairs)
-                    )
-                    previous = candidate_stats.get(antecedents)
+                    antecedent_key = tuple(sorted(antecedent_pairs))
+                    previous = candidate_stats.get(antecedent_key)
                     if previous is None:
-                        candidate_stats[antecedents] = (float(score), float(score), 1)
+                        candidate_stats[antecedent_key] = (float(score), float(score), 1)
                     else:
                         previous_max, previous_sum, previous_count = previous
-                        candidate_stats[antecedents] = (
+                        candidate_stats[antecedent_key] = (
                             max(previous_max, float(score)),
                             previous_sum + float(score),
                             previous_count + 1,
@@ -290,17 +286,17 @@ def generate_prototype_rule_base(
 
     if scoring_mode == "max":
         ranked_candidates = sorted(
-            ((antecedents, stats[0]) for antecedents, stats in candidate_stats.items()),
-            key=lambda item: (-len(item[0]), -item[1], _rule_signature(item[0])),
+            ((antecedent_key, stats[0]) for antecedent_key, stats in candidate_stats.items()),
+            key=lambda item: (-len(item[0]), -item[1], item[0]),
         )
     else:
         # Hybrid score favors consistently strong rules over one-off spikes.
-        def _hybrid_key(item: tuple[tuple[Antecedent, ...], tuple[float, float, int]]):
-            antecedents, (max_score, sum_score, count_score) = item
+        def _hybrid_key(item: tuple[tuple[tuple[int, int], ...], tuple[float, float, int]]):
+            antecedent_key, (max_score, sum_score, count_score) = item
             mean_score = sum_score / max(count_score, 1)
             support = count_score / max(sample_count, 1)
             hybrid = 0.55 * mean_score + 0.30 * max_score + 0.15 * support
-            return (-hybrid, -mean_score, -support, -len(antecedents), _rule_signature(antecedents))
+            return (-hybrid, -mean_score, -support, -len(antecedent_key), antecedent_key)
 
         ranked_candidates = sorted(candidate_stats.items(), key=_hybrid_key)
 
@@ -309,7 +305,10 @@ def generate_prototype_rule_base(
 
     rules = [
         RuleSpec(
-            antecedents=candidate_entry[0],
+            antecedents=tuple(
+                Antecedent(variable_index=variable_index, term_index=term_index)
+                for variable_index, term_index in candidate_entry[0]
+            ),
             name=f"{name_prefix}_{rule_index}",
             gate_init=gate_init,
         )

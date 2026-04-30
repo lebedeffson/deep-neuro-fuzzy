@@ -79,6 +79,7 @@ from .hierarchical_anfis import (
     HierarchicalAnfisStageConfig,
     build_hierarchical_anfis_model,
 )
+from .kanfis import DeepKANFISModel, KANFISModel
 from .explanations import (
     BlockExplanation,
     ConceptExemplar,
@@ -174,6 +175,8 @@ __all__ = [
     "HierarchicalAnfisBlockConfig",
     "HierarchicalAnfisModelConfig",
     "HierarchicalAnfisStageConfig",
+    "DeepKANFISModel",
+    "KANFISModel",
     "ShallowFuzzyModelConfig",
     "HiddenBlockRulePathFlow",
     "HiddenConceptPathFlow",
