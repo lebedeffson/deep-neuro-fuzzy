@@ -77,7 +77,7 @@ Outside the neuro-fuzzy line, architecturally interpretable deep learning has de
 
 These studies mark a shift from explaining a finished black-box model toward designing models whose internal structure supports interpretation during inference. This distinction is essential here. Post hoc methods such as LIME and SHAP can explain individual predictions of a trained model, but they do not require the predictor itself to contain stable or semantically organized internal representations~\cite{ribeiro2016lime,lundberg2017shap,rudin2019stop}.
 
-The Kolmogorov--Arnold superposition theorem gives another useful architectural viewpoint: a multivariate continuous function can be represented through sums and superpositions of univariate functions~\cite{kolmogorov1957superposition,arnold1957functions}. In this paper we do not use the theorem as a strict approximation guarantee for a finite trained fuzzy model. Instead, we use it as a design principle for replacing high-order fuzzy rules by routed sums of one-dimensional fuzzy predicates and upper-level concept functions.
+The Kolmogorov--Arnold superposition theorem gives another useful architectural viewpoint: a multivariate continuous function can be represented through sums and superpositions of univariate functions~\cite{kolmogorov1957superposition,arnold1957functions}. Recent Kolmogorov--Arnold Networks (KANs) use this principle to replace fixed node activations with learnable edge functions~\cite{liu2024kan}. In this paper we do not reproduce a spline-based KAN. Instead, we build a fuzzy counterpart: routed sums of one-dimensional membership predicates are combined into concept functions and then into a final fuzzy decision layer.
 
 The remaining gap lies between these research lines. Neuro-fuzzy models preserve explicit rule-based reasoning, but they face structural growth when depth and high-dimensional inputs are introduced. Architecturally interpretable deep models provide concepts, prototypes, or self-explaining components, but fuzzy inference is not their core reasoning mechanism~\cite{zeng2019deep,alvarez2018self,koh2020concept,chen2019looks,chen2020concept}. This gap motivates the controlled comparison presented in this paper: fuzzy-block architectures are built on a shared fuzzy inference mechanism and compared as different ways of increasing depth while preserving structural interpretability, with Routed KAFN developed as the final stability-oriented architecture.
 
@@ -323,7 +323,7 @@ Taken together, the global stability analysis and the local case-level trace def
 \section{Results}
 
 The compared architectures differ along three evaluation dimensions: predictive quality, rule-base complexity, and internal rule stability. In the reference comparison block, stacked shows the strongest average-rank profile, while DFFL remains competitive on selected tasks and no architecture dominates all tasks at once. The focused Covtype experiments then motivate and evaluate Routed KAFN as the final stability-oriented architecture.
-The key quantitative evidence is reported in Tables~\ref{tab:main_results}, \ref{tab:extended_results}, \ref{tab:kanfis_covtype}, \ref{tab:kafn_ablation}, \ref{tab:covtype_capacity_check}, \ref{tab:susy_discriminative}, \ref{tab:best_vs_baseline}, and \ref{tab:all_vs_baseline}.
+The key quantitative evidence is reported in Tables~\ref{tab:main_results}, \ref{tab:extended_results}, \ref{tab:kanfis_covtype}, \ref{tab:kafn_ablation}, \ref{tab:kafn_best_criteria}, \ref{tab:covtype_capacity_check}, \ref{tab:susy_discriminative}, \ref{tab:best_vs_baseline}, and \ref{tab:all_vs_baseline}.
 Values in Tables~\ref{tab:main_results}--\ref{tab:all_vs_baseline} are reported as mean $\pm$ standard deviation across three seeds, except entries explicitly marked as single-seed checks; complete run settings and outputs are provided in the reproducibility artifacts.
 For transparency, Table~\ref{tab:main_results} uses one unified reference run for all four neuro-fuzzy architectures under matched seeds, splits, preprocessing, and training budget.
 
@@ -415,6 +415,28 @@ Routed KAFN + fixed projections & 0.8174$\pm$0.0101 & 936 & 936 & 0.9167 & final
 
 The final KA variant does not overtake the stacked fuzzy model in mean F1, but it changes the quality--interpretability balance. Compared with stacked fuzzy, it loses about $0.0048$ F1 while increasing active-rule Jaccard from $0.0978$ to $0.9167$. Compared with histogram gradient boosting, it gives a slightly higher mean F1 in this focused block and provides explicit fuzzy rules. Compared with the binary-aware KA variant, the projection extension adds interaction capacity and improves mean F1 from $0.8165$ to $0.8174$, at the cost of increasing active rules from 780 to 936.
 
+\begin{table}[H]
+\centering
+\caption{Best observed values by criterion in the focused \textit{covtype\_binary\_20000} block.}
+\label{tab:kafn_best_criteria}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lll}
+\toprule
+Criterion & Best model & Value \\
+\midrule
+Best overall F1 & Extra Trees & 0.8546$\pm$0.0026 \\
+Best fuzzy F1 & stacked fuzzy & 0.8222$\pm$0.0074 \\
+Best stable fuzzy F1, $J>0.9$ & Routed KAFN, fixed projections & 0.8174$\pm$0.0101 \\
+Best active-rule Jaccard & Routed KAFN, binary-aware & 0.9188 \\
+Best final-model Jaccard & Routed KAFN, fixed projections & 0.9167 \\
+Best non-fuzzy baseline below Extra Trees & HistGradientBoosting & 0.8154$\pm$0.0065 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Thus, the metric where the proposed family is best is structural stability: both KAFN variants exceed $0.91$ active-rule Jaccard. The final fixed-projection KAFN is also the best stable fuzzy classifier in this block and slightly exceeds histogram gradient boosting in mean F1, but it is not the absolute F1 leader.
+
 When the analysis shifts from predictive quality to internal rule stability, the picture changes. In the current quality-oriented DFFL setting, active-rule Jaccard in the main block is lower than in the strongest stability-oriented variants, which indicates that quality-focused tuning can reduce reproducibility of internal active-rule configurations.
 
 Because the larger Covtype task suggested that the reference stacked model may be capacity-limited, we additionally ran a targeted large-scale capacity check on the full \textit{covtype\_binary} data set with 581,012 samples. This check is reported separately from the unified reference comparison because it uses an enhanced stacked configuration: larger hidden width and rule budget (factor $3.0$), a gated final skip from 32 selected raw features, distillation from an Extra Trees teacher (blend weight $0.15$), and a second-stage error-focused fine-tuning. The result is a stronger stacked variant with 150 rules and 33 hidden concepts.
@@ -499,21 +521,21 @@ covtype\_binary\_20000 & F1   & Routed KAFN        & 0.8174$\pm$0.0101 & extra t
 
 \begin{table}[H]
 \centering
-\caption{Reference neuro-fuzzy architectures against the best external baseline per data set (signed delta; positive is better). Routed KAFN is reported separately in Tables~\ref{tab:kanfis_covtype} and~\ref{tab:kafn_ablation}.}
+\caption{Reference neuro-fuzzy architectures and Routed KAFN against the best external baseline per data set (signed delta; positive is better). Dashes indicate that Routed KAFN was evaluated only in the focused Covtype block.}
 \label{tab:all_vs_baseline}
 \scriptsize
 \setlength{\tabcolsep}{3pt}
-\begin{tabular}{lclcccc}
+\begin{tabular}{lclccccc}
 \toprule
-Dataset & Metric & Best baseline & Shallow & Stacked & Hierarchical & DFFL \\
+Dataset & Metric & Best baseline & Shallow & Stacked & Hierarchical & DFFL & Routed KAFN \\
 \midrule
-diabetes               & RMSE & linear regression                 & -0.0073 & -0.0079 & -0.0158 & -0.0017 \\
-linnerud\_weight       & RMSE & hist gradient boosting & -0.0462 & +0.0170 & +0.0628 & +0.0183 \\
-breast\_cancer         & F1   & extra trees classifier           & -0.0159 & -0.0067 & -0.0186 & -0.0256 \\
-wine\_binary           & F1   & extra trees classifier           & -0.0423 & -0.0145 & -0.0811 & -0.0436 \\
-digits\_binary         & F1   & mlp classifier                   & -0.0633 & -0.0047 & -0.0047 & +0.0000 \\
-california\_housing    & RMSE & hist gradient boosting & -0.0349 & -0.0221 & -0.0262 & -0.0313 \\
-covtype\_binary\_20000 & F1   & extra trees classifier           & -0.1444 & -0.0417 & -0.0428 & -0.1027 \\
+diabetes               & RMSE & linear regression                 & -0.0073 & -0.0079 & -0.0158 & -0.0017 & -- \\
+linnerud\_weight       & RMSE & hist gradient boosting & -0.0462 & +0.0170 & +0.0628 & +0.0183 & -- \\
+breast\_cancer         & F1   & extra trees classifier           & -0.0159 & -0.0067 & -0.0186 & -0.0256 & -- \\
+wine\_binary           & F1   & extra trees classifier           & -0.0423 & -0.0145 & -0.0811 & -0.0436 & -- \\
+digits\_binary         & F1   & mlp classifier                   & -0.0633 & -0.0047 & -0.0047 & +0.0000 & -- \\
+california\_housing    & RMSE & hist gradient boosting & -0.0349 & -0.0221 & -0.0262 & -0.0313 & -- \\
+covtype\_binary\_20000 & F1   & extra trees classifier           & -0.1444 & -0.0417 & -0.0428 & -0.1027 & -0.0372 \\
 \bottomrule
 \end{tabular}
 \end{table}
