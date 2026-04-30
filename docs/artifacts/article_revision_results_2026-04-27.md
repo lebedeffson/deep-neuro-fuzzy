@@ -28,14 +28,13 @@
 - Reproducibility appendix table (hyperparams per run) generated in:
   - `docs/artifacts/article_support_tables_2026-04-27.md`
 
-## Manuscript updates
+## Historical manuscript updates
 
 - Added capacity-matched diagnostic paragraph in results.
 - Added tau-sensitivity paragraph in results.
 - Added runtime trade-off paragraph in discussion.
-- Updated in both:
-  - `main(2).tex`
-  - `docs/article_current/main.tex`
+- The manuscript source files referenced by this historical note were removed
+  from git when the repository was converted to code/artifact-only storage.
 
 ## Optional large dataset
 

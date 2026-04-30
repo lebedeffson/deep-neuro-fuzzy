@@ -1,9 +1,14 @@
 # Индекс материалов репозитория
 
-Актуальный главный материал статьи сейчас находится в корне репозитория:
+Репозиторий хранит код, воспроизводимые настройки, компактные артефакты и
+рисунки. Полные тексты статьи, LaTeX-исходники и Word-версии намеренно не
+хранятся в git.
 
-- `main(2).tex` — основной LaTeX-текст статьи про Routed KAFN.
-- `docs/iiti26_references_skeleton_en.bib` — библиография для сборки.
+Актуальные материалы проекта:
+
+- `src/ruanfis/` — библиотечный код fuzzy/KAFN моделей.
+- `examples/` — entrypoint-скрипты для бенчмарков.
+- `docs/artifacts/` — компактные paper-facing сводки и traceability notes.
 - `docs/figures/fig5_kafn_architecture.png` — схема Routed KAFN.
 - `docs/figures/fig6_kafn_explanation_flow.png` — схема объяснения Routed KAFN.
 - `docs/figures/generate_kafn_figures.py` — генератор KAFN-рисунков.
@@ -43,12 +48,9 @@
 
 ## Устаревшие материалы
 
-Файлы `docs/iiti26_*.md` и `docs/iiti26_*.docx` сохранены как исторические
-рабочие версии. Они не являются текущим canonical paper source.
-
-Старый пакет `docs/submission/iiti26_submission_pack_2026-04-16/` удалён из git,
-потому что он относится к прежней версии статьи и больше не соответствует
-KAFN-рукописи.
+Старые `docs/iiti26_*.md`, `docs/iiti26_*.docx`, `docs/article_current/` и
+другие полные черновики статьи удалены из git. Репозиторий остаётся кодовым и
+artifact-facing.
 
 ## Что не коммитить
 
@@ -57,4 +59,6 @@ KAFN-рукописи.
 - `data/`
 - логи запусков;
 - скачанные датасеты;
-- LaTeX build-файлы.
+- LaTeX-исходники статей;
+- LaTeX build-файлы;
+- Word-версии статей.

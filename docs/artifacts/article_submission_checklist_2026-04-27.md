@@ -7,10 +7,9 @@
 
 ## Already fixed
 
-- Covtype DFFL numbers updated to the completed 3-seed run (`0.8361 +/- 0.0031`) in:
-  - `main(2).tex`
-  - `docs/article_current/main.tex`
-  - `docs/artifacts/README.md`
+- Covtype DFFL numbers updated to the completed 3-seed run (`0.8361 +/- 0.0031`).
+- The historical manuscript source files were later removed from git when the
+  repository was converted to code/artifact-only storage.
 - Covtype large-scale table no longer marks DFFL as single-seed.
 - Epoch-level training logs added to benchmark pipeline:
   - `--log-epochs`

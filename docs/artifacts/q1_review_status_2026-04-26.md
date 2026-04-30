@@ -6,9 +6,9 @@ This file maps the strict review points to current repository status.
 
 | Item | Status | Evidence |
 | --- | --- | --- |
-| Unresolved placeholders like `[?]` in paper | done | `main(2).tex`, `docs/article_current/main.tex` checked (none found) |
+| Unresolved placeholders like `[?]` in paper | historical | Checked in manuscript files that were later removed from git |
 | Figure labels language consistency | done (generator side) | `docs/figures/generate_iiti26_figures.py` emits English titles/labels |
-| Single canonical article bundle | done | `docs/article_current/` (`main.tex`, `references.bib`, figures, metrics JSON) |
+| Single canonical article bundle | historical | Article source bundle was later removed from git |
 
 ## 2) Reproducibility protocol completeness
 

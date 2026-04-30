@@ -1,8 +1,8 @@
 # Deep Neuro-Fuzzy Architectures
 
-Research code and manuscript materials for interpretable deep neuro-fuzzy
-models, with the current paper focused on **Routed Kolmogorov--Arnold Fuzzy
-Networks (Routed KAFN)**.
+Research code, benchmark entrypoints, and compact reproducibility artifacts for
+interpretable deep neuro-fuzzy models, with the current work focused on
+**Routed Kolmogorov--Arnold Fuzzy Networks (Routed KAFN)**.
 
 The repository implements and compares five fuzzy architectures:
 
@@ -13,16 +13,17 @@ The repository implements and compares five fuzzy architectures:
 5. Routed KAFN.
 
 The Python package is still named `ruanfis` for compatibility, but the project
-scope is the full deep neuro-fuzzy benchmark and KAFN manuscript.
+scope is the full deep neuro-fuzzy benchmark and KAFN evaluation.
 
-## Current Manuscript
+## Current Project Materials
 
-Canonical paper source:
+The repository intentionally does not store article manuscripts or Word drafts.
+It stores code, benchmark configuration, curated result summaries, and figures:
 
-- `main(2).tex`
-- bibliography: `docs/iiti26_references_skeleton_en.bib`
-- figures: `docs/figures/`
+- library code: `src/ruanfis/`
+- benchmark entrypoints: `examples/`
 - compact artifacts: `docs/artifacts/`
+- figures: `docs/figures/`
 
 Main claim: Routed KAFN is not presented as a universal accuracy winner. Its
 validated strength is a quality--complexity--stability operating point:

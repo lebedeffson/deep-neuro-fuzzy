@@ -2,7 +2,8 @@
 
 ## What We Already Have (Reliable)
 
-- Canonical article bundle in `docs/article_current/`.
+- Historical article bundle existed at the time of this note; manuscript
+  sources were later removed from git.
 - Reproducibility manifest pipeline (runtime/CUDA/git/command).
 - Strong Covtype tuned stacked result with 3 seeds.
 - Fuzzy-vs-baseline snapshots on Covtype and KDD (seed 23).
