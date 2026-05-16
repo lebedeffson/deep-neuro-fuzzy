@@ -196,6 +196,27 @@ python -m pip install -e .[dev]
 Python `>=3.11` is required. The benchmark environment used in this repository
 usually uses `.venv_run/bin/python`.
 
+## Reproducibility Quick Start
+
+```bash
+make smoke
+```
+
+For full article-scale runs:
+
+```bash
+make all
+```
+
+`make all` requires local prepared datasets. See
+[DATA_PREPARATION.md](DATA_PREPARATION.md) and
+[REPRODUCIBILITY.md](REPRODUCIBILITY.md).
+
+All reported experiments use fixed seeds explicitly specified in run commands
+(for paper runs: `19,23,29`, unless stated otherwise).
+For manuscript references, use a fixed git tag (for example:
+`v1.0-submission`) rather than a moving `main` branch.
+
 ## Main Entrypoints
 
 ```bash

@@ -27,4 +27,6 @@ jobs:
           python -m pip install -e .[dev]
 
       - name: Run tests
+        env:
+          PYTHONPATH: .
         run: pytest -q
