@@ -70,6 +70,42 @@ def check_stable_proxy(path: Path) -> list[tuple[str, str]]:
     return issues
 
 
+def check_stable_h_summary(path: Path) -> list[tuple[str, str]]:
+    rows = _read_csv(path)
+    if not rows:
+        return [
+            (
+                "WARN",
+                "missing H-based Stable Budget-Prune summary; Stable remains proxy-only until this is produced.",
+            )
+        ]
+    by_method = {(row["budget"], row["method"]): row for row in rows}
+    issues: list[tuple[str, str]] = []
+    for budget in sorted({row["budget"] for row in rows}):
+        bp = by_method.get((budget, "budget_prune_h_lr"))
+        stable = by_method.get((budget, "stable_budget_prune_h_lr"))
+        if bp is None or stable is None:
+            issues.append(("WARN", f"H-based stable summary budget={budget} lacks paired BP/Stable rows."))
+            continue
+        f1_drop = float(bp["f1_mean"]) - float(stable["f1_mean"])
+        stable_jaccard = float(stable["jaccard_to_budget_prune_mean"])
+        if f1_drop <= 0.01:
+            issues.append(
+                (
+                    "OK",
+                    f"H-based stable budget={budget}: f1_drop={f1_drop:.4f}, jaccard_to_bp={stable_jaccard:.4f}.",
+                )
+            )
+        else:
+            issues.append(
+                (
+                    "WARN",
+                    f"H-based stable budget={budget}: f1_drop={f1_drop:.4f}; keep Stable as extension.",
+                )
+            )
+    return issues
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--docs-dir", type=Path, default=Path("docs"))
@@ -78,6 +114,7 @@ def main() -> None:
     checks = []
     checks.extend(check_main_table(docs / "unified_main_methods_table.csv"))
     checks.extend(check_stable_proxy(docs / "q1_stable_selection_smoke_summary.csv"))
+    checks.extend(check_stable_h_summary(docs / "tables_stable_h_selection_summary.csv"))
 
     fail_count = sum(1 for level, _msg in checks if level == "FAIL")
     warn_count = sum(1 for level, _msg in checks if level == "WARN")

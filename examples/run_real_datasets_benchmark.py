@@ -4202,6 +4202,85 @@ def _extract_rule_feature_matrix(
     return np.stack(cols, axis=1)
 
 
+def _predict_logits_numpy(model: torch.nn.Module, inputs: torch.Tensor, *, batch_size: int = 8192) -> np.ndarray:
+    chunks: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, int(inputs.size(0)), int(batch_size)):
+            batch = inputs[start : start + int(batch_size)]
+            logits = predict_with_optional_residual_head(model, batch, top_k_rules=None)
+            chunks.append(logits.detach().cpu().reshape(-1).numpy().astype(np.float32, copy=False))
+    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0,), dtype=np.float32)
+
+
+def _export_v18_h_artifacts_for_kanfis(
+    *,
+    dataset_name: str,
+    seed: int,
+    model: DeepKANFISModel,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    test_inputs: torch.Tensor,
+    test_targets: torch.Tensor,
+    output_dir: Path,
+    classification_threshold: float,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    entries = _collect_kanfis_importance_entries(model, train_inputs)
+    if not entries:
+        return
+
+    selected_keys = [(str(item["source"]), int(item["rule_local_index"])) for item in entries]
+    rule_rows = [
+        {
+            "dataset": dataset_name,
+            "seed": int(seed),
+            "column": int(column),
+            "rank": int(column + 1),
+            "rule_key": f'{item["source"]}::{item["rule_name"]}',
+            "source": str(item["source"]),
+            "rule_local_index": int(item["rule_local_index"]),
+            "rule_name": str(item["rule_name"]),
+            "importance": float(item["importance"]),
+        }
+        for column, item in enumerate(entries)
+    ]
+    _append_csv_rows(
+        output_dir / "v18_h_rule_index.csv",
+        [
+            "dataset",
+            "seed",
+            "column",
+            "rank",
+            "rule_key",
+            "source",
+            "rule_local_index",
+            "rule_name",
+            "importance",
+        ],
+        rule_rows,
+    )
+
+    h_train = _extract_rule_feature_matrix(model, train_inputs, selected_keys)
+    h_test = _extract_rule_feature_matrix(model, test_inputs, selected_keys)
+    train_logits = _predict_logits_numpy(model, train_inputs)
+    test_logits = _predict_logits_numpy(model, test_inputs)
+    artifact_path = output_dir / f"v18_h_artifacts_{dataset_name}_seed{int(seed)}.npz"
+    np.savez_compressed(
+        artifact_path,
+        h_train=h_train.astype(np.float32, copy=False),
+        h_test=h_test.astype(np.float32, copy=False),
+        y_train=train_targets.detach().cpu().reshape(-1).numpy().astype(np.float32, copy=False),
+        y_test=test_targets.detach().cpu().reshape(-1).numpy().astype(np.float32, copy=False),
+        full_train_logits=train_logits,
+        full_test_logits=test_logits,
+        full_train_prob=(1.0 / (1.0 + np.exp(-train_logits))).astype(np.float32, copy=False),
+        full_test_prob=(1.0 / (1.0 + np.exp(-test_logits))).astype(np.float32, copy=False),
+        importance=np.asarray([float(item["importance"]) for item in entries], dtype=np.float32),
+        rule_key=np.asarray([f'{item["source"]}::{item["rule_name"]}' for item in entries]),
+        classification_threshold=np.asarray([float(classification_threshold)], dtype=np.float32),
+    )
+
+
 def _export_v18_controls_for_kanfis(
     *,
     dataset_name: str,
@@ -4425,6 +4504,7 @@ def run_single_seed_dataset_benchmark(
     v18_controls_dir: Path | None = None,
     v18_lr_budgets: tuple[int, ...] = (100, 200, 400),
     v18_random_state: int = 42,
+    v18_export_h_artifacts: bool = False,
 ):
     feature_geometry_requested = _validate_feature_geometry(feature_geometry)
     binary_heavy_grouping_mode = _validate_binary_heavy_grouping_mode(binary_heavy_grouping_mode)
@@ -5740,6 +5820,18 @@ def run_single_seed_dataset_benchmark(
             lr_budgets=tuple(int(x) for x in v18_lr_budgets if int(x) > 0),
             random_state=int(v18_random_state),
         )
+        if bool(v18_export_h_artifacts):
+            _export_v18_h_artifacts_for_kanfis(
+                dataset_name=str(spec.name),
+                seed=int(seed),
+                model=trained_fuzzy_models["ruanfis_kanfis"],
+                train_inputs=train_inputs,
+                train_targets=train_targets,
+                test_inputs=test_inputs,
+                test_targets=test_targets,
+                output_dir=Path(v18_controls_dir),
+                classification_threshold=float(model_thresholds["ruanfis_kanfis"]),
+            )
     progress_log(f"seed={seed} fuzzy_eval: done in {time.perf_counter() - phase_started_at:.2f}s")
     progress_log(f"seed={seed} all models: complete")
 
@@ -7049,6 +7141,11 @@ def main() -> None:
         default=42,
         help="Random seed for v18 control diagnostics.",
     )
+    parser.add_argument(
+        "--v18-export-h-artifacts",
+        action="store_true",
+        help="Export KAFN rule activation matrices and full-model probabilities for H-based stable-selection checks.",
+    )
     args = parser.parse_args()
     _apply_gpu_only_mode(args)
     args.feature_geometry = _validate_feature_geometry(args.feature_geometry)
@@ -7258,6 +7355,7 @@ def main() -> None:
                 v18_controls_dir=args.v18_controls_dir,
                 v18_lr_budgets=v18_lr_budgets,
                 v18_random_state=int(args.v18_random_state),
+                v18_export_h_artifacts=bool(args.v18_export_h_artifacts),
             )
             per_seed_results.append(tuple(seed_results))
             print(
