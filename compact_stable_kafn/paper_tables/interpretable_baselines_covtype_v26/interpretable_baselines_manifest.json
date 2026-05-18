@@ -1,0 +1,19 @@
+{
+  "datasets": [
+    "covtype_binary_20000"
+  ],
+  "seeds": [
+    19,
+    23,
+    29
+  ],
+  "rulefit_budgets": [
+    100,
+    200,
+    400
+  ],
+  "rows_per_run": 9,
+  "rows_summary": 3,
+  "rows_status": 0,
+  "updated_at": "2026-05-19T01:25:58"
+}

@@ -34,8 +34,14 @@ python examples/run_real_datasets_benchmark.py \
   --output-dir compact_stable_kafn/runs/v18_controls_covtype_full \
   --v18-controls-dir compact_stable_kafn/paper_tables/v18_controls_raw \
   --v18-lr-budgets 100,200,400 \
-  --v18-random-state 42
+  --v18-random-state 42 \
+  --v18-export-h-artifacts
 ```
+
+The `--v18-export-h-artifacts` flag additionally writes per-seed KAFN rule activation matrices and full-model probabilities:
+
+- `compact_stable_kafn/paper_tables/v18_controls_raw/v18_h_artifacts_covtype_binary_20000_seed*.npz`
+- `compact_stable_kafn/paper_tables/v18_controls_raw/v18_h_rule_index.csv`
 
 ## 2) Build final v18 CSV tables for article
 
@@ -55,3 +61,28 @@ Outputs:
 - `docs/tables_rule_activation_correlation.csv`
 - `docs/tables_importance_profile.csv`
 - `docs/tables_compact_kafn_runtime_minimal.csv`
+
+## 3) H-based Stable Budget-Prune selection check
+
+Run this after step 1 has produced `v18_h_artifacts_*.npz`.
+
+```bash
+python compact_stable_kafn/scripts/evaluate_stable_selection_h_artifacts.py \
+  --artifact-dir compact_stable_kafn/paper_tables/v18_controls_raw \
+  --dataset covtype_binary_20000 \
+  --budgets 400 \
+  --out-detail docs/tables_stable_h_selection_detail.csv \
+  --out-summary docs/tables_stable_h_selection_summary.csv \
+  --stability-top-k-multiplier 3 \
+  --std-penalty 0.0
+```
+
+Outputs:
+
+- `docs/tables_stable_h_selection_detail.csv`
+- `docs/tables_stable_h_selection_summary.csv`
+
+Interpretation rule:
+
+- Promote Stable Budget-Prune into the main method only if it improves selected-subset stability while keeping F1 close to Budget-Prune (`drop <= 0.01`) and keeping fidelity gap small.
+- Otherwise, keep it as a stability-aware extension/future-work result.

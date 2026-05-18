@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import math
 import platform
+import resource
 import subprocess
 import sys
 import time
@@ -202,6 +203,30 @@ def set_seed(seed: int) -> None:
 def progress_log(message: str) -> None:
     timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[progress {timestamp}] {message}", flush=True)
+
+
+def _read_current_rss_mb() -> float | None:
+    status_path = Path("/proc/self/status")
+    if not status_path.exists():
+        return None
+    try:
+        for line in status_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                chunks = line.split()
+                if len(chunks) >= 2:
+                    return float(chunks[1]) / 1024.0
+    except Exception:
+        return None
+    return None
+
+
+def _read_peak_rss_mb() -> float | None:
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        # Linux ru_maxrss is in KiB.
+        return float(usage.ru_maxrss) / 1024.0
+    except Exception:
+        return None
 
 
 def _is_covtype_binary_dataset(dataset_name: str) -> bool:
@@ -4202,6 +4227,88 @@ def _extract_rule_feature_matrix(
     return np.stack(cols, axis=1)
 
 
+def _predict_logits_numpy(model: torch.nn.Module, inputs: torch.Tensor, *, batch_size: int = 8192) -> np.ndarray:
+    chunks: list[np.ndarray] = []
+    parameter = next(model.parameters())
+    device = parameter.device
+    dtype = parameter.dtype
+    with torch.no_grad():
+        for start in range(0, int(inputs.size(0)), int(batch_size)):
+            batch = inputs[start : start + int(batch_size)].to(device=device, dtype=dtype)
+            logits = predict_with_optional_residual_head(model, batch, top_k_rules=None)
+            chunks.append(logits.detach().cpu().reshape(-1).numpy().astype(np.float32, copy=False))
+    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0,), dtype=np.float32)
+
+
+def _export_v18_h_artifacts_for_kanfis(
+    *,
+    dataset_name: str,
+    seed: int,
+    model: DeepKANFISModel,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    test_inputs: torch.Tensor,
+    test_targets: torch.Tensor,
+    output_dir: Path,
+    classification_threshold: float,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    entries = _collect_kanfis_importance_entries(model, train_inputs)
+    if not entries:
+        return
+
+    selected_keys = [(str(item["source"]), int(item["rule_local_index"])) for item in entries]
+    rule_rows = [
+        {
+            "dataset": dataset_name,
+            "seed": int(seed),
+            "column": int(column),
+            "rank": int(column + 1),
+            "rule_key": f'{item["source"]}::{item["rule_name"]}',
+            "source": str(item["source"]),
+            "rule_local_index": int(item["rule_local_index"]),
+            "rule_name": str(item["rule_name"]),
+            "importance": float(item["importance"]),
+        }
+        for column, item in enumerate(entries)
+    ]
+    _append_csv_rows(
+        output_dir / "v18_h_rule_index.csv",
+        [
+            "dataset",
+            "seed",
+            "column",
+            "rank",
+            "rule_key",
+            "source",
+            "rule_local_index",
+            "rule_name",
+            "importance",
+        ],
+        rule_rows,
+    )
+
+    h_train = _extract_rule_feature_matrix(model, train_inputs, selected_keys)
+    h_test = _extract_rule_feature_matrix(model, test_inputs, selected_keys)
+    train_logits = _predict_logits_numpy(model, train_inputs)
+    test_logits = _predict_logits_numpy(model, test_inputs)
+    artifact_path = output_dir / f"v18_h_artifacts_{dataset_name}_seed{int(seed)}.npz"
+    np.savez_compressed(
+        artifact_path,
+        h_train=h_train.astype(np.float32, copy=False),
+        h_test=h_test.astype(np.float32, copy=False),
+        y_train=train_targets.detach().cpu().reshape(-1).numpy().astype(np.float32, copy=False),
+        y_test=test_targets.detach().cpu().reshape(-1).numpy().astype(np.float32, copy=False),
+        full_train_logits=train_logits,
+        full_test_logits=test_logits,
+        full_train_prob=(1.0 / (1.0 + np.exp(-train_logits))).astype(np.float32, copy=False),
+        full_test_prob=(1.0 / (1.0 + np.exp(-test_logits))).astype(np.float32, copy=False),
+        importance=np.asarray([float(item["importance"]) for item in entries], dtype=np.float32),
+        rule_key=np.asarray([f'{item["source"]}::{item["rule_name"]}' for item in entries]),
+        classification_threshold=np.asarray([float(classification_threshold)], dtype=np.float32),
+    )
+
+
 def _export_v18_controls_for_kanfis(
     *,
     dataset_name: str,
@@ -4425,9 +4532,19 @@ def run_single_seed_dataset_benchmark(
     v18_controls_dir: Path | None = None,
     v18_lr_budgets: tuple[int, ...] = (100, 200, 400),
     v18_random_state: int = 42,
+    v18_export_h_artifacts: bool = False,
 ):
+    run_rss_start_mb = _read_current_rss_mb()
     feature_geometry_requested = _validate_feature_geometry(feature_geometry)
     binary_heavy_grouping_mode = _validate_binary_heavy_grouping_mode(binary_heavy_grouping_mode)
+    stage_runtime: dict[str, float | None] = {
+        "full_train_sec": None,
+        "h_build_sec": None,
+        "selection_sec": None,
+        "refit_head_sec": None,
+        "inference_ms_per_sample": None,
+        "memory_peak_mb": None,
+    }
     phase_started_at = time.perf_counter()
     set_seed(seed)
     progress_log(f"seed={seed} split: start")
@@ -5464,21 +5581,27 @@ def run_single_seed_dataset_benchmark(
             device=device,
         )
         kanfis_trainer = FuzzyTrainer(kanfis_model, kanfis_training_config)
+        full_train_started_at = time.perf_counter()
         kanfis_trainer.fit(
             train_inputs,
             model_train_targets["ruanfis_kanfis"],
             validation_inputs,
             validation_targets,
         )
+        stage_runtime["full_train_sec"] = float(time.perf_counter() - full_train_started_at)
+        selection_sec = 0.0
+        refit_head_sec = 0.0
         if kanfis_prune_rules > 0:
             importance_inputs = train_inputs
             if str(kanfis_importance_split).strip().lower() == "val":
                 importance_inputs = validation_inputs
+            selection_started_at = time.perf_counter()
             pruned_rule_count = kanfis_model.prune_to_top_k_rules(
                 int(kanfis_prune_rules),
                 inputs=importance_inputs,
                 batch_size=8192,
             )
+            selection_sec += float(time.perf_counter() - selection_started_at)
             progress_log(
                 f"seed={seed} model=kanfis: pruned_active_rules={pruned_rule_count} "
                 f"(importance_split={kanfis_importance_split})"
@@ -5514,12 +5637,15 @@ def run_single_seed_dataset_benchmark(
                     log_prefix=f"seed={seed} model=kanfis-recovery",
                     device=device,
                 )
+                refit_started_at = time.perf_counter()
                 FuzzyTrainer(kanfis_model, kanfis_recovery_config).fit(
                     train_inputs,
                     model_train_targets["ruanfis_kanfis"],
                     validation_inputs,
                     validation_targets,
                 )
+                refit_head_sec += float(time.perf_counter() - refit_started_at)
+        stage_runtime["selection_sec"] = float(selection_sec)
         if kanfis_polish_epochs > 0:
             kanfis_polish_config = TrainingConfig(
                 task_type=spec.task_type,
@@ -5551,12 +5677,15 @@ def run_single_seed_dataset_benchmark(
                 log_prefix=f"seed={seed} model=kanfis-polish",
                 device=device,
             )
+            polish_started_at = time.perf_counter()
             FuzzyTrainer(kanfis_model, kanfis_polish_config).fit(
                 train_inputs,
                 train_targets,
                 validation_inputs,
                 validation_targets,
             )
+            refit_head_sec += float(time.perf_counter() - polish_started_at)
+        stage_runtime["refit_head_sec"] = float(refit_head_sec)
         _maybe_run_hard_sample_finetune(
             enabled=fuzzy_hard_sample_training and "ruanfis_kanfis" in hard_sample_enabled_models,
             model_name="ruanfis_kanfis",
@@ -5702,26 +5831,42 @@ def run_single_seed_dataset_benchmark(
             )
         )
 
-    fuzzy_results = tuple(
-        evaluate_trained_model(
-            model_name,
-            trained_fuzzy_models[model_name],
-            task_type=spec.task_type,
-            train_inputs=train_inputs,
-            train_targets=train_targets,
-            test_inputs=test_inputs,
-            test_targets=test_targets,
-            classification_threshold=model_thresholds[model_name],
-            rule_probability_threshold=rule_probability_threshold,
-            top_k_rules=model_top_k_rules.get(model_name),
-            prediction_postprocessor=model_prediction_postprocessors.get(model_name),
-            dffl_concept_expert_labels=(
-                dffl_concept_expert_labels if model_name == "ruanfis_refined_deep" else None
-            ),
+    fuzzy_results_list: list[Any] = []
+    for model_name in FUZZY_MODEL_NAMES:
+        if model_name not in trained_fuzzy_models:
+            continue
+        fuzzy_results_list.append(
+            evaluate_trained_model(
+                model_name,
+                trained_fuzzy_models[model_name],
+                task_type=spec.task_type,
+                train_inputs=train_inputs,
+                train_targets=train_targets,
+                test_inputs=test_inputs,
+                test_targets=test_targets,
+                classification_threshold=model_thresholds[model_name],
+                rule_probability_threshold=rule_probability_threshold,
+                top_k_rules=model_top_k_rules.get(model_name),
+                prediction_postprocessor=model_prediction_postprocessors.get(model_name),
+                dffl_concept_expert_labels=(
+                    dffl_concept_expert_labels if model_name == "ruanfis_refined_deep" else None
+                ),
+            )
         )
-        for model_name in FUZZY_MODEL_NAMES
-        if model_name in trained_fuzzy_models
-    )
+        if model_name == "ruanfis_kanfis":
+            infer_started_at = time.perf_counter()
+            logits = _predict_logits_batched(
+                trained_fuzzy_models[model_name],
+                test_inputs,
+                top_k_rules=model_top_k_rules.get(model_name),
+            )
+            prediction_postprocessor = model_prediction_postprocessors.get(model_name)
+            if prediction_postprocessor is not None:
+                _ = prediction_postprocessor(logits)
+            infer_elapsed = float(time.perf_counter() - infer_started_at)
+            sample_count = max(1, int(test_inputs.size(0)))
+            stage_runtime["inference_ms_per_sample"] = infer_elapsed * 1000.0 / float(sample_count)
+    fuzzy_results = tuple(fuzzy_results_list)
     if (
         v18_controls_dir is not None
         and spec.task_type == "binary_classification"
@@ -5740,10 +5885,34 @@ def run_single_seed_dataset_benchmark(
             lr_budgets=tuple(int(x) for x in v18_lr_budgets if int(x) > 0),
             random_state=int(v18_random_state),
         )
+        if bool(v18_export_h_artifacts):
+            h_build_started_at = time.perf_counter()
+            _export_v18_h_artifacts_for_kanfis(
+                dataset_name=str(spec.name),
+                seed=int(seed),
+                model=trained_fuzzy_models["ruanfis_kanfis"],
+                train_inputs=train_inputs,
+                train_targets=train_targets,
+                test_inputs=test_inputs,
+                test_targets=test_targets,
+                output_dir=Path(v18_controls_dir),
+                classification_threshold=float(model_thresholds["ruanfis_kanfis"]),
+            )
+            stage_runtime["h_build_sec"] = float(time.perf_counter() - h_build_started_at)
+    elif bool(v18_export_h_artifacts):
+        # H-export stage requested but not applicable for this KAFN variant.
+        stage_runtime["h_build_sec"] = 0.0
     progress_log(f"seed={seed} fuzzy_eval: done in {time.perf_counter() - phase_started_at:.2f}s")
     progress_log(f"seed={seed} all models: complete")
 
-    return (*sklearn_results, *fuzzy_results)
+    peak_rss_mb = _read_peak_rss_mb()
+    if peak_rss_mb is None and run_rss_start_mb is not None:
+        peak_rss_mb = run_rss_start_mb
+    if peak_rss_mb is not None and run_rss_start_mb is not None:
+        peak_rss_mb = max(float(peak_rss_mb), float(run_rss_start_mb))
+    stage_runtime["memory_peak_mb"] = peak_rss_mb
+
+    return (*sklearn_results, *fuzzy_results), stage_runtime
 
 
 def render_dataset_multi_seed_report(spec: DatasetSpec, result: MultiSeedBenchmarkResult) -> str:
@@ -5778,6 +5947,35 @@ def _rank_scores(values: dict[str, float], higher_is_better: bool) -> dict[str, 
 
 def _format_mean_std(mean: float, std: float, decimals: int = 4) -> str:
     return f"{mean:.{decimals}f} +/- {std:.{decimals}f}"
+
+
+def _summarize_stage_runtime(
+    per_seed_stage_runtime: list[dict[str, float | int | None]],
+) -> dict[str, dict[str, float | int | None]]:
+    stage_keys = (
+        "full_train_sec",
+        "h_build_sec",
+        "selection_sec",
+        "refit_head_sec",
+        "inference_ms_per_sample",
+        "memory_peak_mb",
+    )
+    summary: dict[str, dict[str, float | int | None]] = {}
+    for key in stage_keys:
+        values = [
+            float(item[key])
+            for item in per_seed_stage_runtime
+            if item.get(key) is not None
+        ]
+        if not values:
+            summary[key] = {"mean": None, "std": None, "n": 0}
+            continue
+        summary[key] = {
+            "mean": float(np.mean(values)),
+            "std": float(np.std(values, ddof=0)) if len(values) > 1 else 0.0,
+            "n": int(len(values)),
+        }
+    return summary
 
 
 def build_cross_dataset_summary(
@@ -7049,6 +7247,11 @@ def main() -> None:
         default=42,
         help="Random seed for v18 control diagnostics.",
     )
+    parser.add_argument(
+        "--v18-export-h-artifacts",
+        action="store_true",
+        help="Export KAFN rule activation matrices and full-model probabilities for H-based stable-selection checks.",
+    )
     args = parser.parse_args()
     _apply_gpu_only_mode(args)
     args.feature_geometry = _validate_feature_geometry(args.feature_geometry)
@@ -7158,13 +7361,14 @@ def main() -> None:
         ]
         resolved_dataset_budget_policy = "+".join(resolved_policy_parts) if resolved_policy_parts else "none"
         per_seed_results = []
+        per_seed_stage_runtime: list[dict[str, float | int | None]] = []
         total_seeds = len(seeds)
         for seed_index, seed in enumerate(seeds, start=1):
             print(
                 f"[progress] dataset={dataset_name} seed={seed} start ({seed_index}/{total_seeds})",
                 flush=True,
             )
-            seed_results = run_single_seed_dataset_benchmark(
+            seed_results, seed_stage_runtime = run_single_seed_dataset_benchmark(
                 spec,
                 seed=seed,
                 test_size=args.test_size,
@@ -7258,8 +7462,20 @@ def main() -> None:
                 v18_controls_dir=args.v18_controls_dir,
                 v18_lr_budgets=v18_lr_budgets,
                 v18_random_state=int(args.v18_random_state),
+                v18_export_h_artifacts=bool(args.v18_export_h_artifacts),
             )
             per_seed_results.append(tuple(seed_results))
+            per_seed_stage_runtime.append(
+                {
+                    "seed": int(seed),
+                    "full_train_sec": seed_stage_runtime.get("full_train_sec"),
+                    "h_build_sec": seed_stage_runtime.get("h_build_sec"),
+                    "selection_sec": seed_stage_runtime.get("selection_sec"),
+                    "refit_head_sec": seed_stage_runtime.get("refit_head_sec"),
+                    "inference_ms_per_sample": seed_stage_runtime.get("inference_ms_per_sample"),
+                    "memory_peak_mb": seed_stage_runtime.get("memory_peak_mb"),
+                }
+            )
             print(
                 f"[progress] dataset={dataset_name} seed={seed} done ({seed_index}/{total_seeds})",
                 flush=True,
@@ -7385,6 +7601,8 @@ def main() -> None:
             "input_dim": input_dim,
             "primary_metric": PRIMARY_METRIC[spec.task_type],
             "runtime_seconds": float(time.perf_counter() - dataset_started_at),
+            "runtime_stages_per_seed": per_seed_stage_runtime,
+            "runtime_stages_summary": _summarize_stage_runtime(per_seed_stage_runtime),
             "architectures": {
                 "ruanfis_shallow": _summarize_shallow_architecture(input_dim),
                 "ruanfis_stacked_anfis": _summarize_stacked_architecture(input_dim),
