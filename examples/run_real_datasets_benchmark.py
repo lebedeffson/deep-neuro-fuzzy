@@ -4204,9 +4204,12 @@ def _extract_rule_feature_matrix(
 
 def _predict_logits_numpy(model: torch.nn.Module, inputs: torch.Tensor, *, batch_size: int = 8192) -> np.ndarray:
     chunks: list[np.ndarray] = []
+    parameter = next(model.parameters())
+    device = parameter.device
+    dtype = parameter.dtype
     with torch.no_grad():
         for start in range(0, int(inputs.size(0)), int(batch_size)):
-            batch = inputs[start : start + int(batch_size)]
+            batch = inputs[start : start + int(batch_size)].to(device=device, dtype=dtype)
             logits = predict_with_optional_residual_head(model, batch, top_k_rules=None)
             chunks.append(logits.detach().cpu().reshape(-1).numpy().astype(np.float32, copy=False))
     return np.concatenate(chunks, axis=0) if chunks else np.zeros((0,), dtype=np.float32)

@@ -97,6 +97,7 @@ def build_main_table(methods_csv: Path, out_csv: Path) -> list[dict[str, object]
 def build_control_table(
     lr_csv: Path,
     stable_csv: Path,
+    stable_h_csv: Path,
     runtime_csv: Path,
     rulefit_csv: Path,
     out_csv: Path,
@@ -136,6 +137,31 @@ def build_control_table(
                     f"current_jaccard={float(row['current_budget_prune_pairwise_jaccard']):.4f}; "
                     f"stable_jaccard={float(row['stable_loo_pairwise_jaccard']):.4f}; "
                     f"retention={float(row['stable_loo_importance_retention_mean']):.4f}"
+                ),
+            }
+        )
+
+    stable_h_rows = _read_csv(stable_h_csv)
+    by_h = {(row["budget"], row["method"]): row for row in stable_h_rows}
+    for budget in sorted({row["budget"] for row in stable_h_rows}, key=int):
+        bp = by_h.get((budget, "budget_prune_h_lr"))
+        stable = by_h.get((budget, "stable_budget_prune_h_lr"))
+        if bp is None or stable is None:
+            continue
+        f1_drop = float(bp["f1_mean"]) - float(stable["f1_mean"])
+        fidelity_delta = float(stable["fidelity_l1_to_full_prob_mean"]) - float(bp["fidelity_l1_to_full_prob_mean"])
+        out_rows.append(
+            {
+                "block": "stable_budget_prune_h_validation",
+                "dataset": stable["dataset"],
+                "budget": int(budget),
+                "metric": "f1_drop_fidelity_delta_jaccard_to_bp",
+                "value": _fmt(f1_drop),
+                "support": (
+                    f"bp_f1={float(bp['f1_mean']):.4f}; stable_f1={float(stable['f1_mean']):.4f}; "
+                    f"fidelity_delta={fidelity_delta:.4f}; "
+                    f"agreement_stable={float(stable['agreement_to_full_mean']):.4f}; "
+                    f"jaccard_to_bp={float(stable['jaccard_to_budget_prune_mean']):.4f}"
                 ),
             }
         )
@@ -195,18 +221,24 @@ def write_takeaways(path: Path, main_rows: list[dict[str, object]], control_rows
         )
     if stable_400:
         lines.append(f"- Stable Budget-Prune proxy at B=400: {stable_400['support']}.")
+    stable_h_400 = next(
+        (r for r in control_rows if r["block"] == "stable_budget_prune_h_validation" and r["budget"] == 400),
+        None,
+    )
+    if stable_h_400:
+        lines.append(f"- Stable Budget-Prune H-based validation at B=400: {stable_h_400['support']}.")
     lines.extend(
         [
             "",
             "## How To Combine Into One Paper",
             "",
-            "Use Budget-Prune as the main submitted method, Gate-L1 as ablation, RuleFit as external baseline, and Stable Budget-Prune as a stability-aware extension subsection.",
+            "Use Budget-Prune as the main submitted method, Gate-L1 as ablation, RuleFit as external baseline, and Stable Budget-Prune as a validated stability-aware extension at B=400.",
             "",
-            "Important: Stable Budget-Prune should stay clearly labelled as a stability-aware extension until full H-based F1/fidelity checks are complete.",
+            "Important: Stable Budget-Prune improves stability with a small F1 drop in the H-based check; do not claim it improves every metric.",
             "",
-            "## Missing Final Practical Check",
+            "## Remaining Practical Gap",
             "",
-            "Run one H-based validation pass for Stable Budget-Prune on Covtype B=400. If it preserves F1/fidelity, promote it into the main contribution. If not, keep it as future work.",
+            "Covtype still has no RuleFit row, and SUSY still lacks matched KAFN quality rows in the unified main comparison. Keep those claims separate unless we run/recover them.",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -224,6 +256,7 @@ def main() -> None:
     control_rows = build_control_table(
         docs / "tables_lr_topk_baseline.csv",
         docs / "q1_stable_selection_smoke_summary.csv",
+        docs / "tables_stable_h_selection_summary.csv",
         docs / "tables_compact_kafn_runtime_minimal.csv",
         Path("compact_stable_kafn/paper_tables/interpretable_baselines_q1/interpretable_baselines_summary.csv"),
         docs / "unified_control_checks_table.csv",

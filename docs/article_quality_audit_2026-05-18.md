@@ -96,9 +96,12 @@ Avoid:
 
 Because the current unified table does not include matching SUSY KAFN quality rows.
 
-### 5. Stable Budget-Prune smoke
+### 5. Stable Budget-Prune validation
 
-Source: `docs/q1_stable_selection_smoke_summary.csv`
+Sources:
+
+- `docs/q1_stable_selection_smoke_summary.csv`
+- `docs/tables_stable_h_selection_summary.csv`
 
 Strong points:
 
@@ -107,16 +110,23 @@ Strong points:
   - B=200: `0.3939 -> 0.6284`
   - B=400: `0.6384 -> 0.8296`
 - At B=400, importance retention is good: `0.9284`.
+- H-based B=400 validation keeps predictive quality close:
+  - Budget-Prune H-LR F1: `0.7771`
+  - Stable Budget-Prune H-LR F1: `0.7739`
+  - F1 drop: `0.0032`
+  - fidelity L1 delta: `+0.0116`
+  - agreement to full KAFN: `0.8562`
+  - Jaccard to Budget-Prune subset: `0.7464`
 
 Safe claim:
 
-> A preliminary stability-aware extension improves selected-subset reproducibility, especially at B=400, while preserving most held-out importance.
+> A stability-aware extension improves selected-subset reproducibility at B=400 while preserving H-based predictive quality within a small F1 drop.
 
 Avoid:
 
-> Stable Budget-Prune is fully validated.
+> Stable Budget-Prune improves every metric.
 
-Because this is still an importance-profile proxy, not an H-based F1/fidelity evaluation.
+Because H-based fidelity is slightly worse than ordinary Budget-Prune, even though F1 drop is small.
 
 ## Weak Spots
 
@@ -166,32 +176,15 @@ Only use runtime as computational context. Write:
 
 > These times are not strict training-speed comparisons because the compact KAFN pipeline and RuleFit construct different models.
 
-### D. Stable Budget-Prune needs one decisive practical check
+### D. Stable Budget-Prune still needs careful wording
 
 Problem:
 
-Current Stable result is proxy-only.
+Stable now has H-based B=400 validation, but the validation is selection-head based and fidelity is slightly worse.
 
 Fix:
 
-One H-based Covtype B=400 check:
-
-```text
-Budget-Prune vs Stable Budget-Prune
-seeds: 19, 23, 29
-metrics: F1, ROC-AUC, PR-AUC, fidelity gap, prediction agreement, subset Jaccard
-```
-
-Promotion rule:
-
-```text
-Stable can be main method if:
-Jaccard improves
-and F1 drop <= 0.01
-and fidelity gap is small
-```
-
-Otherwise keep it as extension/future work.
+Present it as a validated stability-aware extension at B=400, not as a universal replacement for Budget-Prune.
 
 ## Recommended Article Claims
 
@@ -202,7 +195,7 @@ Use:
 3. **Compression regime depends on data:** Gate-L1 wins on small Breast Cancer, while Budget-Prune wins at larger Covtype budget.
 4. **Not just feature selection:** LR on top-K rules is weaker than compact KAFN.
 5. **External interpretability baseline:** RuleFit is included and compact KAFN is competitive on Breast Cancer.
-6. **Stability direction:** Stable Budget-Prune improves subset reproducibility in proxy analysis, motivating a stability-aware extension.
+6. **Stability direction:** Stable Budget-Prune improves subset reproducibility and passes H-based B=400 validation with a small F1 drop.
 
 Do not use:
 
@@ -210,22 +203,22 @@ Do not use:
 2. Universal superiority of Budget-Prune over Gate-L1.
 3. Full Q1 benchmark claim across many datasets.
 4. Strict training-speed superiority over RuleFit.
-5. Stable Budget-Prune as fully validated unless H-based check is completed.
+5. Stable Budget-Prune as universally better across all metrics.
 
 ## Minimal Pre-Submission Work
 
 Required:
 
 1. Clean main table so SUSY is not misleading.
-2. Add limitation paragraph for Stable Budget-Prune proxy.
+2. Add limitation paragraph for Stable Budget-Prune fidelity/runtime scope.
 3. Add method paragraph for Budget-Prune theoretical rationale.
 4. Add RuleFit config table or footnote.
 5. Add LR top-K control table.
 
 Recommended:
 
-1. H-based Stable Budget-Prune check at Covtype B=400.
-2. Covtype RuleFit if runtime is acceptable.
+1. Covtype RuleFit if runtime is acceptable.
+2. Recover or generate SUSY KAFN quality rows, or keep SUSY separate.
 3. Convert `docs/unified_main_methods_table.csv` into manuscript-ready LaTeX/Word table.
 
 ## Quality Decision
@@ -234,11 +227,11 @@ If no new runs:
 
 Submit as a careful empirical-method paper, likely strong Q2 / technical journal.
 
-If H-based Stable check succeeds:
+After H-based Stable check:
 
-The work becomes much stronger and can be framed as a unified method:
+The work is stronger and can be framed as:
 
-> Budget-Prune with stability-aware rule selection for compact, reproducible KAFN dictionaries.
+> Budget-Prune with a stability-aware extension for compact, reproducible KAFN dictionaries.
 
 If we also add Covtype RuleFit or SUSY KAFN quality rows:
 

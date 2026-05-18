@@ -7,7 +7,7 @@
 1. **Budget-Prune** — основной надежный метод структурного бюджетного сокращения.
 2. **Gate-L1** — обучаемая sparse-абляция, особенно полезная на малом медицинском датасете.
 3. **RuleFit** — внешний интерпретируемый baseline.
-4. **Stable Budget-Prune** — stability-aware расширение; переносим в главный вклад только после H-based проверки F1/fidelity.
+4. **Stable Budget-Prune** — stability-aware расширение; H-based B=400 проверка пройдена с малой потерей F1.
 
 Так мы не выбрасываем текущие эксперименты и не строим Q1-claim на одном proxy.
 
@@ -42,6 +42,13 @@ docs/unified_control_checks_table.csv
   - B=100: `0.2887 -> 0.5076`, retention `0.6997`.
   - B=200: `0.3939 -> 0.6284`, retention `0.7715`.
   - B=400: `0.6384 -> 0.8296`, retention `0.9284`.
+- H-based B=400 validation:
+  - Budget-Prune H-LR F1: `0.7771`.
+  - Stable Budget-Prune H-LR F1: `0.7739`.
+  - F1 drop: `0.0032`.
+  - fidelity delta: `+0.0116`.
+  - agreement to full KAFN: `0.8562`.
+  - Jaccard to Budget-Prune subset: `0.7464`.
 - Runtime context есть, но его нельзя подавать как строгое speed-сравнение обучения.
 
 ## Что надо добить практически
@@ -49,18 +56,18 @@ docs/unified_control_checks_table.csv
 ### Минимум для объединенной статьи
 
 1. Оставить Stable Budget-Prune как subsection: "stability-aware extension".
-2. Написать честно: full F1/fidelity для Stable Budget-Prune — следующий контроль, proxy уже показывает перспективу на B=400.
-3. Не заявлять, что Stable Budget-Prune полностью валидирован.
+2. Написать честно: Stable Budget-Prune на B=400 сохраняет качество почти без потери, но fidelity немного хуже.
+3. Не заявлять, что Stable Budget-Prune лучше по всем метрикам.
 
 Это уже можно собрать в одну сильную версию без нового долгого обучения.
 
 ### Если хотим сделать Stable Budget-Prune главным вкладом
 
-Нужно сделать один финальный H-based контроль:
+Минимальный H-based контроль уже сделан для Covtype B=400. Чтобы сделать вклад ещё сильнее, можно расширить:
 
 ```text
 dataset: covtype_binary_20000
-budget: 400
+budget: 100, 200, 400
 seeds: 19, 23, 29
 methods:
   - Budget-Prune
@@ -82,11 +89,11 @@ and F1 drop <= 0.01
 and fidelity gap is small
 ```
 
-Если это выполняется — статья становится одной Q1-oriented работой:
+Для B=400 критерий по F1 выполняется (`drop=0.0032`), но fidelity чуть хуже. Поэтому формулировка:
 
-> Budget-Prune + Stable Budget-Prune for compact and reproducible KAFN rule dictionaries.
+> Budget-Prune with a stability-aware extension for compact and reproducible KAFN rule dictionaries.
 
-Если нет — Stable Budget-Prune остается как честный appendix/future work, а основная статья не ломается.
+Не формулировать как "Stable всегда лучше Budget-Prune".
 
 ## Как пересобрать unified tables
 

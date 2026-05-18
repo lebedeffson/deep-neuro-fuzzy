@@ -5,6 +5,7 @@ lr_topk_control,covtype_binary_20000,400,f1_delta_budget_prune_minus_lr_topk,0.0
 stable_budget_prune_proxy,covtype_binary_20000,100,jaccard_gain_and_importance_retention,0.2189,current_jaccard=0.2887; stable_jaccard=0.5076; retention=0.6997
 stable_budget_prune_proxy,covtype_binary_20000,200,jaccard_gain_and_importance_retention,0.2345,current_jaccard=0.3939; stable_jaccard=0.6284; retention=0.7715
 stable_budget_prune_proxy,covtype_binary_20000,400,jaccard_gain_and_importance_retention,0.1913,current_jaccard=0.6384; stable_jaccard=0.8296; retention=0.9284
+stable_budget_prune_h_validation,covtype_binary_20000,400,f1_drop_fidelity_delta_jaccard_to_bp,0.0032,bp_f1=0.7771; stable_f1=0.7739; fidelity_delta=0.0116; agreement_stable=0.8562; jaccard_to_bp=0.7464
 runtime_context,breast_cancer,100,runtime_context_not_strict_speed_claim,0.0622,compact_kafn_pipeline=16.6s; rulefit=1.0s
 runtime_context,breast_cancer,200,runtime_context_not_strict_speed_claim,0.0715,compact_kafn_pipeline=16.8s; rulefit=1.2s
 runtime_context,breast_cancer,400,runtime_context_not_strict_speed_claim,0.0843,compact_kafn_pipeline=15.7s; rulefit=1.3s
