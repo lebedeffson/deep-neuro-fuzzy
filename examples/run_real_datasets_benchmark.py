@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import copy
 import datetime as dt
 import json
@@ -24,6 +25,7 @@ from sklearn.datasets import fetch_california_housing, fetch_covtype
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 
@@ -4072,6 +4074,262 @@ def _select_bootstrap_subset(
     return inputs.index_select(0, indices), targets.index_select(0, indices)
 
 
+def _parse_int_csv(raw: str) -> tuple[int, ...]:
+    values: list[int] = []
+    for part in str(raw).split(","):
+        token = part.strip()
+        if not token:
+            continue
+        values.append(int(token))
+    return tuple(values)
+
+
+def _append_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
+def _collect_kanfis_layer_inputs(
+    model: DeepKANFISModel, inputs: torch.Tensor
+) -> tuple[list[torch.Tensor], torch.Tensor | None, torch.Tensor | None]:
+    with torch.no_grad():
+        full_inputs = inputs.to(device=model.decision_weights.device, dtype=model.decision_weights.dtype)
+        features = model._select_inputs(full_inputs)
+        layer_inputs: list[torch.Tensor] = []
+        pair_input: torch.Tensor | None = None
+        projection_input: torch.Tensor | None = None
+        for layer_index, layer in enumerate(model.layers):
+            layer_inputs.append(features)
+            features = layer(features)
+            if layer_index == 0 and (model.pair_layer is not None or model.projection_layer is not None):
+                extras = []
+                if model.pair_layer is not None:
+                    pair_input = full_inputs
+                    extras.append(model.pair_layer(full_inputs))
+                if model.projection_layer is not None:
+                    projection_input = full_inputs
+                    extras.append(model.projection_layer(full_inputs))
+                features = torch.cat((features, *extras), dim=1)
+    return layer_inputs, pair_input, projection_input
+
+
+def _collect_kanfis_importance_entries(
+    model: DeepKANFISModel,
+    train_inputs: torch.Tensor,
+) -> list[dict[str, object]]:
+    layer_scales, pair_scale, projection_scale = model._layer_decision_scales()
+    layer_inputs, pair_input, projection_input = _collect_kanfis_layer_inputs(model, train_inputs)
+    entries: list[dict[str, object]] = []
+    with torch.no_grad():
+        for layer_idx, (layer, layer_input, scale) in enumerate(zip(model.layers, layer_inputs, layer_scales, strict=True)):
+            importances = layer.data_aware_rule_importances(layer_input.detach().cpu(), scale.detach().cpu(), batch_size=8192)
+            active_mask = layer.rule_active_mask.detach().cpu().reshape(-1) > 0
+            active_indices = torch.nonzero(active_mask, as_tuple=False).reshape(-1).tolist()
+            for local_index in active_indices:
+                entries.append(
+                    {
+                        "source": f"layer_{layer_idx}",
+                        "rule_local_index": int(local_index),
+                        "rule_name": layer.describe_rule(int(local_index)),
+                        "importance": float(importances[int(local_index)].item()),
+                    }
+                )
+        if model.pair_layer is not None and pair_input is not None and pair_scale is not None:
+            importances = model.pair_layer.data_aware_rule_importances(
+                pair_input.detach().cpu(),
+                pair_scale.detach().cpu(),
+                batch_size=8192,
+            )
+            active_mask = model.pair_layer.rule_active_mask.detach().cpu().reshape(-1) > 0
+            active_indices = torch.nonzero(active_mask, as_tuple=False).reshape(-1).tolist()
+            for local_index in active_indices:
+                entries.append(
+                    {
+                        "source": "pair_layer",
+                        "rule_local_index": int(local_index),
+                        "rule_name": model.pair_layer.describe_rule(int(local_index)),
+                        "importance": float(importances[int(local_index)].item()),
+                    }
+                )
+        if model.projection_layer is not None and projection_input is not None and projection_scale is not None:
+            importances = model.projection_layer.data_aware_rule_importances(
+                projection_input.detach().cpu(),
+                projection_scale.detach().cpu(),
+                batch_size=8192,
+            )
+            active_mask = model.projection_layer.rule_active_mask.detach().cpu().reshape(-1) > 0
+            active_indices = torch.nonzero(active_mask, as_tuple=False).reshape(-1).tolist()
+            for local_index in active_indices:
+                entries.append(
+                    {
+                        "source": "projection_layer",
+                        "rule_local_index": int(local_index),
+                        "rule_name": model.projection_layer.describe_rule(int(local_index)),
+                        "importance": float(importances[int(local_index)].item()),
+                    }
+                )
+    entries.sort(key=lambda item: -float(item["importance"]))
+    return entries
+
+
+def _extract_rule_feature_matrix(
+    model: DeepKANFISModel,
+    inputs: torch.Tensor,
+    selected_rule_keys: list[tuple[str, int]],
+) -> np.ndarray:
+    if not selected_rule_keys:
+        return np.zeros((int(inputs.size(0)), 0), dtype=np.float32)
+    layer_inputs, pair_input, projection_input = _collect_kanfis_layer_inputs(model, inputs)
+    source_to_scores: dict[str, torch.Tensor] = {}
+    with torch.no_grad():
+        for layer_idx, (layer, layer_input) in enumerate(zip(model.layers, layer_inputs, strict=True)):
+            source_to_scores[f"layer_{layer_idx}"] = layer.rule_scores(layer_input).detach().cpu()
+        if model.pair_layer is not None and pair_input is not None:
+            source_to_scores["pair_layer"] = model.pair_layer.rule_scores(pair_input).detach().cpu()
+        if model.projection_layer is not None and projection_input is not None:
+            source_to_scores["projection_layer"] = model.projection_layer.rule_scores(projection_input).detach().cpu()
+    cols: list[np.ndarray] = []
+    for source, local_index in selected_rule_keys:
+        values = source_to_scores[source][:, int(local_index)].numpy().astype(np.float32, copy=False)
+        cols.append(values)
+    return np.stack(cols, axis=1)
+
+
+def _export_v18_controls_for_kanfis(
+    *,
+    dataset_name: str,
+    seed: int,
+    model: DeepKANFISModel,
+    train_inputs: torch.Tensor,
+    train_targets: torch.Tensor,
+    test_inputs: torch.Tensor,
+    test_targets: torch.Tensor,
+    output_dir: Path,
+    lr_budgets: tuple[int, ...],
+    random_state: int,
+) -> None:
+    if train_inputs.ndim != 2 or test_inputs.ndim != 2:
+        return
+    output_dir.mkdir(parents=True, exist_ok=True)
+    entries = _collect_kanfis_importance_entries(model, train_inputs)
+    if not entries:
+        return
+
+    importance_rows = [
+        {
+            "dataset": dataset_name,
+            "seed": int(seed),
+            "rank": int(rank),
+            "source": str(item["source"]),
+            "rule_local_index": int(item["rule_local_index"]),
+            "rule_name": str(item["rule_name"]),
+            "importance": float(item["importance"]),
+        }
+        for rank, item in enumerate(entries, start=1)
+    ]
+    _append_csv_rows(
+        output_dir / "tables_importance_profile.csv",
+        ["dataset", "seed", "rank", "source", "rule_local_index", "rule_name", "importance"],
+        importance_rows,
+    )
+
+    available_budgets = sorted({int(b) for b in lr_budgets if int(b) > 0 and int(b) <= len(entries)})
+    lr_rows: list[dict[str, object]] = []
+    corr_rows: list[dict[str, object]] = []
+    for budget in available_budgets:
+        selected = entries[:budget]
+        selected_keys = [(str(item["source"]), int(item["rule_local_index"])) for item in selected]
+        x_train = _extract_rule_feature_matrix(model, train_inputs, selected_keys)
+        x_test = _extract_rule_feature_matrix(model, test_inputs, selected_keys)
+        y_train = train_targets.detach().cpu().reshape(-1).numpy()
+        y_test = test_targets.detach().cpu().reshape(-1).numpy()
+        y_train_bin = (y_train >= 0.5).astype(np.int64)
+        y_test_bin = (y_test >= 0.5).astype(np.int64)
+
+        lr = LogisticRegression(
+            solver="lbfgs",
+            max_iter=1000,
+            random_state=int(random_state),
+        )
+        lr.fit(x_train, y_train_bin)
+        p_test = lr.predict_proba(x_test)[:, 1]
+        y_pred = (p_test >= 0.5).astype(np.int64)
+        lr_rows.append(
+            {
+                "dataset": dataset_name,
+                "seed": int(seed),
+                "budget": int(budget),
+                "method": "lr_topk_rules",
+                "f1": float(f1_score(y_test_bin, y_pred)),
+                "roc_auc": float(roc_auc_score(y_test_bin, p_test)),
+                "pr_auc": float(average_precision_score(y_test_bin, p_test)),
+                "n_features": int(x_train.shape[1]),
+            }
+        )
+
+        if x_train.shape[1] >= 2:
+            corr = np.corrcoef(x_train, rowvar=False)
+            corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+            tri = np.abs(corr[np.triu_indices(corr.shape[0], k=1)])
+            if tri.size > 0:
+                corr_rows.append(
+                    {
+                        "dataset": dataset_name,
+                        "seed": int(seed),
+                        "subset": f"top_{budget}",
+                        "rule_count": int(budget),
+                        "mean_abs_corr": float(np.mean(tri)),
+                        "median_abs_corr": float(np.median(tri)),
+                        "p75_abs_corr": float(np.quantile(tri, 0.75)),
+                        "p90_abs_corr": float(np.quantile(tri, 0.90)),
+                    }
+                )
+
+        if budget == 400 and len(entries) >= 400:
+            rng = np.random.default_rng(int(random_state) + int(seed))
+            random_indices = rng.choice(len(entries), size=400, replace=False).tolist()
+            random_keys = [
+                (str(entries[idx]["source"]), int(entries[idx]["rule_local_index"]))
+                for idx in random_indices
+            ]
+            x_rand = _extract_rule_feature_matrix(model, train_inputs, random_keys)
+            if x_rand.shape[1] >= 2:
+                corr = np.corrcoef(x_rand, rowvar=False)
+                corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+                tri = np.abs(corr[np.triu_indices(corr.shape[0], k=1)])
+                if tri.size > 0:
+                    corr_rows.append(
+                        {
+                            "dataset": dataset_name,
+                            "seed": int(seed),
+                            "subset": "random_400",
+                            "rule_count": 400,
+                            "mean_abs_corr": float(np.mean(tri)),
+                            "median_abs_corr": float(np.median(tri)),
+                            "p75_abs_corr": float(np.quantile(tri, 0.75)),
+                            "p90_abs_corr": float(np.quantile(tri, 0.90)),
+                        }
+                    )
+
+    _append_csv_rows(
+        output_dir / "tables_lr_topk_baseline.csv",
+        ["dataset", "seed", "budget", "method", "f1", "roc_auc", "pr_auc", "n_features"],
+        lr_rows,
+    )
+    _append_csv_rows(
+        output_dir / "tables_rule_activation_correlation.csv",
+        ["dataset", "seed", "subset", "rule_count", "mean_abs_corr", "median_abs_corr", "p75_abs_corr", "p90_abs_corr"],
+        corr_rows,
+    )
+
+
 def run_single_seed_dataset_benchmark(
     spec: DatasetSpec,
     *,
@@ -4164,6 +4422,9 @@ def run_single_seed_dataset_benchmark(
     device: str | None,
     fuzzy_models: tuple[str, ...] = FUZZY_MODEL_NAMES,
     include_sklearn: bool = True,
+    v18_controls_dir: Path | None = None,
+    v18_lr_budgets: tuple[int, ...] = (100, 200, 400),
+    v18_random_state: int = 42,
 ):
     feature_geometry_requested = _validate_feature_geometry(feature_geometry)
     binary_heavy_grouping_mode = _validate_binary_heavy_grouping_mode(binary_heavy_grouping_mode)
@@ -5461,6 +5722,24 @@ def run_single_seed_dataset_benchmark(
         for model_name in FUZZY_MODEL_NAMES
         if model_name in trained_fuzzy_models
     )
+    if (
+        v18_controls_dir is not None
+        and spec.task_type == "binary_classification"
+        and "ruanfis_kanfis" in trained_fuzzy_models
+        and isinstance(trained_fuzzy_models["ruanfis_kanfis"], DeepKANFISModel)
+    ):
+        _export_v18_controls_for_kanfis(
+            dataset_name=str(spec.name),
+            seed=int(seed),
+            model=trained_fuzzy_models["ruanfis_kanfis"],
+            train_inputs=train_inputs,
+            train_targets=train_targets,
+            test_inputs=test_inputs,
+            test_targets=test_targets,
+            output_dir=Path(v18_controls_dir),
+            lr_budgets=tuple(int(x) for x in v18_lr_budgets if int(x) > 0),
+            random_state=int(v18_random_state),
+        )
     progress_log(f"seed={seed} fuzzy_eval: done in {time.perf_counter() - phase_started_at:.2f}s")
     progress_log(f"seed={seed} all models: complete")
 
@@ -6752,6 +7031,24 @@ def main() -> None:
     parser.add_argument("--reproducibility-manifest-output", type=Path, default=None)
     parser.add_argument("--reproducibility-manifest-json-output", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--v18-controls-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for v18 control CSV exports (LR top-K, correlations, importance profile).",
+    )
+    parser.add_argument(
+        "--v18-lr-budgets",
+        type=str,
+        default="100,200,400",
+        help="Comma-separated budgets for LR-on-topK control.",
+    )
+    parser.add_argument(
+        "--v18-random-state",
+        type=int,
+        default=42,
+        help="Random seed for v18 control diagnostics.",
+    )
     args = parser.parse_args()
     _apply_gpu_only_mode(args)
     args.feature_geometry = _validate_feature_geometry(args.feature_geometry)
@@ -6791,6 +7088,7 @@ def main() -> None:
     fuzzy_models = parse_fuzzy_model_names(args.fuzzy_models)
     fuzzy_distill_models = parse_optional_fuzzy_model_names(args.fuzzy_distill_models)
     fuzzy_hard_sample_models = parse_optional_fuzzy_model_names(args.fuzzy_hard_sample_models)
+    v18_lr_budgets = _parse_int_csv(args.v18_lr_budgets)
     hidden_output_activation = None if args.hidden_output_activation == "identity" else args.hidden_output_activation
 
     dataset_results: dict[str, MultiSeedBenchmarkResult] = {}
@@ -6957,6 +7255,9 @@ def main() -> None:
                 device=args.device,
                 fuzzy_models=fuzzy_models,
                 include_sklearn=not args.skip_sklearn,
+                v18_controls_dir=args.v18_controls_dir,
+                v18_lr_budgets=v18_lr_budgets,
+                v18_random_state=int(args.v18_random_state),
             )
             per_seed_results.append(tuple(seed_results))
             print(
