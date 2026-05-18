@@ -5,12 +5,14 @@ lr_topk_control,covtype_binary_20000,400,f1_delta_budget_prune_minus_lr_topk,0.0
 stable_budget_prune_proxy,covtype_binary_20000,100,jaccard_gain_and_importance_retention,0.2189,current_jaccard=0.2887; stable_jaccard=0.5076; retention=0.6997
 stable_budget_prune_proxy,covtype_binary_20000,200,jaccard_gain_and_importance_retention,0.2345,current_jaccard=0.3939; stable_jaccard=0.6284; retention=0.7715
 stable_budget_prune_proxy,covtype_binary_20000,400,jaccard_gain_and_importance_retention,0.1913,current_jaccard=0.6384; stable_jaccard=0.8296; retention=0.9284
+stable_budget_prune_h_validation,covtype_binary_20000,100,f1_drop_fidelity_delta_jaccard_to_bp,0.0017,bp_f1=0.7634; stable_f1=0.7617; fidelity_delta=0.0055; agreement_stable=0.8392; jaccard_to_bp=0.3102
+stable_budget_prune_h_validation,covtype_binary_20000,200,f1_drop_fidelity_delta_jaccard_to_bp,-0.0015,bp_f1=0.7656; stable_f1=0.7671; fidelity_delta=0.0019; agreement_stable=0.8440; jaccard_to_bp=0.4343
 stable_budget_prune_h_validation,covtype_binary_20000,400,f1_drop_fidelity_delta_jaccard_to_bp,0.0032,bp_f1=0.7771; stable_f1=0.7739; fidelity_delta=0.0116; agreement_stable=0.8562; jaccard_to_bp=0.7464
-runtime_context,breast_cancer,100,runtime_context_not_strict_speed_claim,0.0622,compact_kafn_pipeline=16.6s (+/-1.6); rulefit=1.0s
-runtime_context,breast_cancer,200,runtime_context_not_strict_speed_claim,0.0715,compact_kafn_pipeline=16.8s (+/-1.8); rulefit=1.2s
-runtime_context,breast_cancer,400,runtime_context_not_strict_speed_claim,0.0843,compact_kafn_pipeline=15.7s (+/-1.0); rulefit=1.3s
 runtime_context,susy_binary_200000,100,runtime_context_not_strict_speed_claim,14.3482,compact_kafn_pipeline=27.1s (+/-1.9); rulefit=388.5s
 runtime_context,susy_binary_200000,200,runtime_context_not_strict_speed_claim,52.9263,compact_kafn_pipeline=25.7s (+/-0.9); rulefit=1362.3s
 runtime_context,susy_binary_200000,400,runtime_context_not_strict_speed_claim,588.1707,compact_kafn_pipeline=26.0s (+/-1.5); rulefit=15301.2s
+runtime_context,breast_cancer,100,runtime_context_not_strict_speed_claim,0.0622,compact_kafn_pipeline=16.6s (+/-1.6); rulefit=1.0s
+runtime_context,breast_cancer,200,runtime_context_not_strict_speed_claim,0.0715,compact_kafn_pipeline=16.8s (+/-1.8); rulefit=1.2s
+runtime_context,breast_cancer,400,runtime_context_not_strict_speed_claim,0.0843,compact_kafn_pipeline=15.7s (+/-1.0); rulefit=1.3s
 runtime_budget_prune_anchor,susy_binary_200000,200,budget_prune_end_to_end_runtime_sec,25.7395,budget_prune_runtime=25.74s (+/-0.94); selection-after-full-dictionary context (not strict train-speed race).
 runtime_full_reference_anchor,susy_binary_200000,full,full_dictionary_no_prune_runtime_sec,24.7210,full_no_prune_runtime=24.72s (+/-1.63); n=3; includes training+evaluation with full active dictionary.

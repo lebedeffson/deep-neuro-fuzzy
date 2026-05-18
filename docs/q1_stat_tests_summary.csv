@@ -1,0 +1,4 @@
+dataset,budget,test,method_a,method_b,n_pairs,mean_a,mean_b,delta_mean,std_a,std_b,w_plus,p_value_approx,note
+covtype_binary_20000,100,wilcoxon_signed_rank_approx,budget_prune,lr_topk_rules,3,0.7785342465448886,0.7604344768421172,0.018099769702771384,0.008007511553170645,0.003771553186099121,6.0,0.10880943004054569,approximation; low-power when n is small
+covtype_binary_20000,200,wilcoxon_signed_rank_approx,budget_prune,lr_topk_rules,3,0.7889342773763747,0.7643702995713707,0.024563977805003967,0.010746267791624638,0.003508009396556547,6.0,0.10880943004054569,approximation; low-power when n is small
+covtype_binary_20000,400,wilcoxon_signed_rank_approx,budget_prune,lr_topk_rules,3,0.8044427701741353,0.7788820939965816,0.025560676177553754,0.009782009667541537,0.006760871205009665,6.0,0.10880943004054569,approximation; low-power when n is small
