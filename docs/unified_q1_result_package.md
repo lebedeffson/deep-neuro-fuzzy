@@ -10,6 +10,7 @@
 - Stable Budget-Prune proxy at B=400: current_jaccard=0.6384; stable_jaccard=0.8296; retention=0.9284.
 - Stable Budget-Prune H-based validation at B=400: bp_f1=0.7771; stable_f1=0.7739; fidelity_delta=0.0116; agreement_stable=0.8562; jaccard_to_bp=0.7464.
 - Runtime anchor (SUSY B=200): budget_prune_runtime=25.74s (+/-0.94); selection-after-full-dictionary context (not strict train-speed race).
+- Full KAFN reference (SUSY no-prune): full_no_prune_runtime=24.72s (+/-1.63); n=3; includes training+evaluation with full active dictionary.
 
 ## How To Combine Into One Paper
 
@@ -25,4 +26,6 @@ Covtype still has no RuleFit row, and SUSY still lacks matched KAFN quality rows
 
 Importance retention in Stable proxy tables means retained heldout importance mass: sum(importance of selected subset under heldout seed) / sum(importance of heldout top-B).
 Runtime numbers are context metrics for compactization workflow; they are not a strict apples-to-apples full training speed comparison against RuleFit.
+SUSY B=200 runtime anchor reports the compact budgeted KAFN pipeline under that budget setting.
+SUSY no-prune full reference reports full active-dictionary KAFN runtime over available seeds and is shown only as context, not as a strict speed race against RuleFit.
 The work does not claim full end-to-end KAFN training speed superiority over RuleFit; the focus is selection quality and subset stability.

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
+import json
 from collections import defaultdict
 from pathlib import Path
-from statistics import mean
+from statistics import mean, pstdev
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -225,6 +227,34 @@ def build_control_table(
                 ),
             }
         )
+    full_ref_paths = sorted(
+        glob.glob(
+            "compact_stable_kafn/runs/compact_stable_kafn_susy200k_q1/seed_*/method_full_reference/repeat_0/no_prune/reproducibility_manifest.json"
+        )
+    )
+    full_secs: list[float] = []
+    for p in full_ref_paths:
+        try:
+            j = json.loads(Path(p).read_text(encoding="utf-8"))
+            full_secs.append(float(j["dataset_specific_protocols"]["susy_binary_200000"]["runtime_seconds"]))
+        except Exception:
+            continue
+    if full_secs:
+        full_mean = mean(full_secs)
+        full_std = pstdev(full_secs) if len(full_secs) > 1 else 0.0
+        out_rows.append(
+            {
+                "block": "runtime_full_reference_anchor",
+                "dataset": "susy_binary_200000",
+                "budget": "full",
+                "metric": "full_dictionary_no_prune_runtime_sec",
+                "value": _fmt(full_mean),
+                "support": (
+                    f"full_no_prune_runtime={full_mean:.2f}s (+/-{full_std:.2f}); "
+                    f"n={len(full_secs)}; includes training+evaluation with full active dictionary."
+                ),
+            }
+        )
 
     _write_csv(out_csv, ["block", "dataset", "budget", "metric", "value", "support"], out_rows)
     return out_rows
@@ -274,6 +304,12 @@ def write_takeaways(path: Path, main_rows: list[dict[str, object]], control_rows
     )
     if runtime_anchor:
         lines.append(f"- Runtime anchor (SUSY B=200): {str(runtime_anchor['support']).rstrip('.')}.")
+    runtime_full = next(
+        (r for r in control_rows if r["block"] == "runtime_full_reference_anchor"),
+        None,
+    )
+    if runtime_full:
+        lines.append(f"- Full KAFN reference (SUSY no-prune): {str(runtime_full['support']).rstrip('.')}.")
     lines.extend(
         [
             "",
@@ -291,6 +327,8 @@ def write_takeaways(path: Path, main_rows: list[dict[str, object]], control_rows
             "",
             "Importance retention in Stable proxy tables means retained heldout importance mass: sum(importance of selected subset under heldout seed) / sum(importance of heldout top-B).",
             "Runtime numbers are context metrics for compactization workflow; they are not a strict apples-to-apples full training speed comparison against RuleFit.",
+            "SUSY B=200 runtime anchor reports the compact budgeted KAFN pipeline under that budget setting.",
+            "SUSY no-prune full reference reports full active-dictionary KAFN runtime over available seeds and is shown only as context, not as a strict speed race against RuleFit.",
             "The work does not claim full end-to-end KAFN training speed superiority over RuleFit; the focus is selection quality and subset stability.",
         ]
     )
