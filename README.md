@@ -216,6 +216,8 @@ All reported experiments use fixed seeds explicitly specified in run commands
 (for paper runs: `19,23,29`, unless stated otherwise).
 For manuscript references, use a fixed git tag (for example:
 `v1.0-submission`) rather than a moving `main` branch.
+Submission snapshot URL:
+`https://github.com/lebedeffson/deep-neuro-fuzzy/tree/v1.0-submission`
 
 ## Main Entrypoints
 

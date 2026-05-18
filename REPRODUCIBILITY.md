@@ -47,6 +47,6 @@ Compact paper tables are generated under:
 Use a fixed git tag in manuscripts (example):
 
 - `v1.0-submission`
+- `https://github.com/lebedeffson/deep-neuro-fuzzy/tree/v1.0-submission`
 
 Do not reference moving `main` for final reported numbers.
-
