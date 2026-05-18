@@ -38,6 +38,7 @@ def _winner(values: dict[str, float | None]) -> str:
 def build_main_table(methods_csv: Path, out_csv: Path) -> list[dict[str, object]]:
     rows = _read_csv(methods_csv)
     buckets: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+    buckets_std: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
     n_seeds: dict[tuple[str, str, str], str] = {}
     for row in rows:
         budget = str(row.get("budget", ""))
@@ -48,6 +49,12 @@ def build_main_table(methods_csv: Path, out_csv: Path) -> list[dict[str, object]
             continue
         key = (str(row["dataset"]), budget)
         buckets[key][method] = float(row["f1_mean"])
+        f1_std_raw = str(row.get("f1_std", "")).strip()
+        if f1_std_raw:
+            try:
+                buckets_std[key][method] = float(f1_std_raw)
+            except ValueError:
+                pass
         n_seeds[(key[0], key[1], method)] = str(row.get("n_seeds", ""))
 
     out_rows: list[dict[str, object]] = []
@@ -64,9 +71,13 @@ def build_main_table(methods_csv: Path, out_csv: Path) -> list[dict[str, object]
                 "dataset": dataset,
                 "budget": int(budget),
                 "budget_prune_f1": _fmt(values.get("budget_prune")),
+                "budget_prune_f1_std": _fmt(buckets_std[(dataset, budget)].get("budget_prune")),
                 "gate_l1_f1": _fmt(values.get("gate_l1")),
+                "gate_l1_f1_std": _fmt(buckets_std[(dataset, budget)].get("gate_l1")),
                 "random_b_f1": _fmt(values.get("random_b")),
+                "random_b_f1_std": _fmt(buckets_std[(dataset, budget)].get("random_b")),
                 "rulefit_f1": _fmt(values.get("rulefit")),
+                "rulefit_f1_std": _fmt(buckets_std[(dataset, budget)].get("rulefit")),
                 "best_compact_kafn": compact_winner,
                 "winner_available_methods": all_winner,
                 "n_seeds_budget_prune": n_seeds.get((dataset, budget, "budget_prune"), ""),
@@ -80,9 +91,13 @@ def build_main_table(methods_csv: Path, out_csv: Path) -> list[dict[str, object]
             "dataset",
             "budget",
             "budget_prune_f1",
+            "budget_prune_f1_std",
             "gate_l1_f1",
+            "gate_l1_f1_std",
             "random_b_f1",
+            "random_b_f1_std",
             "rulefit_f1",
+            "rulefit_f1_std",
             "best_compact_kafn",
             "winner_available_methods",
             "n_seeds_budget_prune",
@@ -167,7 +182,10 @@ def build_control_table(
         )
 
     runtime = {
-        (row["dataset"], row["method"], row["budget"]): float(row["elapsed_sec_mean"])
+        (row["dataset"], row["method"], row["budget"]): (
+            float(row["elapsed_sec_mean"]),
+            float(row.get("elapsed_sec_std", 0.0)),
+        )
         for row in _read_csv(runtime_csv)
     }
     rulefit = {
@@ -180,16 +198,33 @@ def build_control_table(
             rf = rulefit.get((dataset, budget))
             if kafn is None or rf is None:
                 continue
+            kafn_mean, kafn_std = kafn
             out_rows.append(
                 {
                     "block": "runtime_context",
                     "dataset": dataset,
                     "budget": int(budget),
                     "metric": "runtime_context_not_strict_speed_claim",
-                    "value": _fmt(rf / max(kafn, 1e-12)),
-                    "support": f"compact_kafn_pipeline={kafn:.1f}s; rulefit={rf:.1f}s",
+                    "value": _fmt(rf / max(kafn_mean, 1e-12)),
+                    "support": f"compact_kafn_pipeline={kafn_mean:.1f}s (+/-{kafn_std:.1f}); rulefit={rf:.1f}s",
                 }
             )
+    susy_b200 = runtime.get(("susy_binary_200000", "budget_prune", "200"))
+    if susy_b200 is not None:
+        susy_mean, susy_std = susy_b200
+        out_rows.append(
+            {
+                "block": "runtime_budget_prune_anchor",
+                "dataset": "susy_binary_200000",
+                "budget": 200,
+                "metric": "budget_prune_end_to_end_runtime_sec",
+                "value": _fmt(susy_mean),
+                "support": (
+                    f"budget_prune_runtime={susy_mean:.2f}s (+/-{susy_std:.2f}); "
+                    "selection-after-full-dictionary context (not strict train-speed race)."
+                ),
+            }
+        )
 
     _write_csv(out_csv, ["block", "dataset", "budget", "metric", "value", "support"], out_rows)
     return out_rows
@@ -227,6 +262,18 @@ def write_takeaways(path: Path, main_rows: list[dict[str, object]], control_rows
     )
     if stable_h_400:
         lines.append(f"- Stable Budget-Prune H-based validation at B=400: {stable_h_400['support']}.")
+    runtime_anchor = next(
+        (
+            r
+            for r in control_rows
+            if r["block"] == "runtime_budget_prune_anchor"
+            and r["dataset"] == "susy_binary_200000"
+            and r["budget"] == 200
+        ),
+        None,
+    )
+    if runtime_anchor:
+        lines.append(f"- Runtime anchor (SUSY B=200): {str(runtime_anchor['support']).rstrip('.')}.")
     lines.extend(
         [
             "",
@@ -239,6 +286,12 @@ def write_takeaways(path: Path, main_rows: list[dict[str, object]], control_rows
             "## Remaining Practical Gap",
             "",
             "Covtype still has no RuleFit row, and SUSY still lacks matched KAFN quality rows in the unified main comparison. Keep those claims separate unless we run/recover them.",
+            "",
+            "## Metric Notes",
+            "",
+            "Importance retention in Stable proxy tables means retained heldout importance mass: sum(importance of selected subset under heldout seed) / sum(importance of heldout top-B).",
+            "Runtime numbers are context metrics for compactization workflow; they are not a strict apples-to-apples full training speed comparison against RuleFit.",
+            "The work does not claim full end-to-end KAFN training speed superiority over RuleFit; the focus is selection quality and subset stability.",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
