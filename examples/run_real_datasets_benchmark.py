@@ -4144,6 +4144,7 @@ def run_single_seed_dataset_benchmark(
     kanfis_projection_width: int,
     kanfis_projection_mode: str,
     kanfis_prune_rules: int,
+    kanfis_importance_split: str,
     kanfis_recovery_epochs: int,
     kanfis_polish_epochs: int,
     kanfis_train_rule_gates: bool,
@@ -5209,12 +5210,18 @@ def run_single_seed_dataset_benchmark(
             validation_targets,
         )
         if kanfis_prune_rules > 0:
+            importance_inputs = train_inputs
+            if str(kanfis_importance_split).strip().lower() == "val":
+                importance_inputs = validation_inputs
             pruned_rule_count = kanfis_model.prune_to_top_k_rules(
                 int(kanfis_prune_rules),
-                inputs=train_inputs,
+                inputs=importance_inputs,
                 batch_size=8192,
             )
-            progress_log(f"seed={seed} model=kanfis: pruned_active_rules={pruned_rule_count}")
+            progress_log(
+                f"seed={seed} model=kanfis: pruned_active_rules={pruned_rule_count} "
+                f"(importance_split={kanfis_importance_split})"
+            )
             if kanfis_recovery_epochs > 0:
                 kanfis_recovery_config = TrainingConfig(
                     task_type=spec.task_type,
@@ -5968,6 +5975,7 @@ def build_reproducibility_manifest_payload(
                 "kanfis_projection_width": int(args.kanfis_projection_width),
                 "kanfis_projection_mode": str(args.kanfis_projection_mode),
                 "kanfis_prune_rules": int(args.kanfis_prune_rules),
+                "kanfis_importance_split": str(args.kanfis_importance_split),
                 "kanfis_recovery_epochs": int(args.kanfis_recovery_epochs),
                 "kanfis_polish_epochs": int(args.kanfis_polish_epochs),
                 "kanfis_train_rule_gates": bool(args.kanfis_train_rule_gates),
@@ -6561,6 +6569,13 @@ def main() -> None:
         help="Post-train active KANFIS rule budget; <=0 disables pruning.",
     )
     parser.add_argument(
+        "--kanfis-importance-split",
+        type=str,
+        default="train",
+        choices=("train", "val"),
+        help="Split used to compute data-aware rule importances for KANFIS budget pruning.",
+    )
+    parser.add_argument(
         "--kanfis-recovery-epochs",
         type=int,
         default=12,
@@ -6922,6 +6937,7 @@ def main() -> None:
                 kanfis_projection_width=int(args.kanfis_projection_width),
                 kanfis_projection_mode=str(args.kanfis_projection_mode),
                 kanfis_prune_rules=int(args.kanfis_prune_rules),
+                kanfis_importance_split=str(args.kanfis_importance_split),
                 kanfis_recovery_epochs=int(args.kanfis_recovery_epochs),
                 kanfis_polish_epochs=int(args.kanfis_polish_epochs),
                 kanfis_train_rule_gates=bool(args.kanfis_train_rule_gates),
@@ -7151,6 +7167,7 @@ def main() -> None:
         f"kanfis_projection_width: {args.kanfis_projection_width}",
         f"kanfis_projection_mode: {args.kanfis_projection_mode}",
         f"kanfis_prune_rules: {args.kanfis_prune_rules}",
+        f"kanfis_importance_split: {args.kanfis_importance_split}",
         f"kanfis_recovery_epochs: {args.kanfis_recovery_epochs}",
         f"kanfis_polish_epochs: {args.kanfis_polish_epochs}",
         f"kanfis_train_rule_gates: {args.kanfis_train_rule_gates}",
@@ -7238,6 +7255,9 @@ def main() -> None:
             "fuzzy_hard_sample_finetune_epochs": int(args.fuzzy_hard_sample_finetune_epochs),
             "fuzzy_hard_sample_finetune_patience": int(args.fuzzy_hard_sample_finetune_patience),
             "fuzzy_hard_sample_teacher_trees": int(args.fuzzy_hard_sample_teacher_trees),
+            "kanfis_prune_rules": int(args.kanfis_prune_rules),
+            "kanfis_skip_gate_l1_weight": float(args.kanfis_skip_gate_l1_weight),
+            "kanfis_importance_split": str(args.kanfis_importance_split),
             "tune_fuzzy_threshold": bool(args.tune_fuzzy_threshold),
             "tune_fuzzy_threshold_calibrated": bool(args.tune_fuzzy_threshold_calibrated),
             "rule_probability_threshold": float(args.rule_probability_threshold),

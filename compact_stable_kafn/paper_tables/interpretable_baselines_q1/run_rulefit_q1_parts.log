@@ -1,0 +1,91 @@
+[part] dataset=breast_cancer budget=100 start 2026-05-16 20:08:02
+[baseline] dataset=breast_cancer seed=7 model=rulefit budget=b100: start
+[baseline] dataset=breast_cancer seed=7 model=rulefit budget=b100: done (0.99s), progress 1/6, eta~0.1m
+[baseline] dataset=breast_cancer seed=19 model=rulefit budget=b100: start
+[baseline] dataset=breast_cancer seed=19 model=rulefit budget=b100: done (1.13s), progress 2/6, eta~0.1m
+[baseline] dataset=breast_cancer seed=23 model=rulefit budget=b100: start
+[baseline] dataset=breast_cancer seed=23 model=rulefit budget=b100: done (1.01s), progress 3/6, eta~0.1m
+[baseline] dataset=breast_cancer seed=29 model=rulefit budget=b100: start
+[baseline] dataset=breast_cancer seed=29 model=rulefit budget=b100: done (1.03s), progress 4/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=42 model=rulefit budget=b100: start
+[baseline] dataset=breast_cancer seed=42 model=rulefit budget=b100: done (1.02s), progress 5/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=101 model=rulefit budget=b100: start
+[baseline] dataset=breast_cancer seed=101 model=rulefit budget=b100: done (1.01s), progress 6/6, eta~0.0m
+written: D:\Sasha\deep-neuro-fuzzy\compact_stable_kafn\paper_tables\interpretable_baselines_q1
+[part] dataset=breast_cancer budget=100 done  2026-05-16 20:08:14
+[part] dataset=breast_cancer budget=200 start 2026-05-16 20:08:14
+[baseline] dataset=breast_cancer seed=7 model=rulefit budget=b200: start
+[baseline] dataset=breast_cancer seed=7 model=rulefit budget=b200: done (1.19s), progress 7/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=19 model=rulefit budget=b200: start
+[baseline] dataset=breast_cancer seed=19 model=rulefit budget=b200: done (1.21s), progress 8/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=23 model=rulefit budget=b200: start
+[baseline] dataset=breast_cancer seed=23 model=rulefit budget=b200: done (1.18s), progress 9/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=29 model=rulefit budget=b200: start
+[baseline] dataset=breast_cancer seed=29 model=rulefit budget=b200: done (1.23s), progress 10/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=42 model=rulefit budget=b200: start
+[baseline] dataset=breast_cancer seed=42 model=rulefit budget=b200: done (1.17s), progress 11/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=101 model=rulefit budget=b200: start
+[baseline] dataset=breast_cancer seed=101 model=rulefit budget=b200: done (1.24s), progress 12/6, eta~0.0m
+written: D:\Sasha\deep-neuro-fuzzy\compact_stable_kafn\paper_tables\interpretable_baselines_q1
+[part] dataset=breast_cancer budget=200 done  2026-05-16 20:08:24
+[part] dataset=breast_cancer budget=400 start 2026-05-16 20:08:24
+[baseline] dataset=breast_cancer seed=7 model=rulefit budget=b400: start
+[baseline] dataset=breast_cancer seed=7 model=rulefit budget=b400: done (1.33s), progress 13/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=19 model=rulefit budget=b400: start
+[baseline] dataset=breast_cancer seed=19 model=rulefit budget=b400: done (1.37s), progress 14/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=23 model=rulefit budget=b400: start
+[baseline] dataset=breast_cancer seed=23 model=rulefit budget=b400: done (1.30s), progress 15/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=29 model=rulefit budget=b400: start
+[baseline] dataset=breast_cancer seed=29 model=rulefit budget=b400: done (1.30s), progress 16/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=42 model=rulefit budget=b400: start
+[baseline] dataset=breast_cancer seed=42 model=rulefit budget=b400: done (1.32s), progress 17/6, eta~0.0m
+[baseline] dataset=breast_cancer seed=101 model=rulefit budget=b400: start
+[baseline] dataset=breast_cancer seed=101 model=rulefit budget=b400: done (1.32s), progress 18/6, eta~0.0m
+written: D:\Sasha\deep-neuro-fuzzy\compact_stable_kafn\paper_tables\interpretable_baselines_q1
+[part] dataset=breast_cancer budget=400 done  2026-05-16 20:08:34
+[part] dataset=susy_binary_200000 budget=100 start 2026-05-16 20:08:34
+[baseline] dataset=susy_binary_200000 seed=7 model=rulefit budget=b100: start
+[baseline] dataset=susy_binary_200000 seed=7 model=rulefit budget=b100: done (298.44s), progress 19/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=19 model=rulefit budget=b100: start
+[baseline] dataset=susy_binary_200000 seed=19 model=rulefit budget=b100: done (363.77s), progress 20/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=23 model=rulefit budget=b100: start
+[baseline] dataset=susy_binary_200000 seed=23 model=rulefit budget=b100: done (439.22s), progress 21/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=29 model=rulefit budget=b100: start
+[baseline] dataset=susy_binary_200000 seed=29 model=rulefit budget=b100: done (325.43s), progress 22/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=42 model=rulefit budget=b100: start
+[baseline] dataset=susy_binary_200000 seed=42 model=rulefit budget=b100: done (483.90s), progress 23/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=101 model=rulefit budget=b100: start
+[baseline] dataset=susy_binary_200000 seed=101 model=rulefit budget=b100: done (420.53s), progress 24/6, eta~0.0m
+written: D:\Sasha\deep-neuro-fuzzy\compact_stable_kafn\paper_tables\interpretable_baselines_q1
+[part] dataset=susy_binary_200000 budget=100 done  2026-05-16 20:49:05
+[part] dataset=susy_binary_200000 budget=200 start 2026-05-16 20:49:05
+[baseline] dataset=susy_binary_200000 seed=7 model=rulefit budget=b200: start
+[baseline] dataset=susy_binary_200000 seed=7 model=rulefit budget=b200: done (1097.66s), progress 25/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=19 model=rulefit budget=b200: start
+[baseline] dataset=susy_binary_200000 seed=19 model=rulefit budget=b200: done (1170.69s), progress 26/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=23 model=rulefit budget=b200: start
+[baseline] dataset=susy_binary_200000 seed=23 model=rulefit budget=b200: done (1224.55s), progress 27/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=29 model=rulefit budget=b200: start
+[baseline] dataset=susy_binary_200000 seed=29 model=rulefit budget=b200: done (1780.21s), progress 28/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=42 model=rulefit budget=b200: start
+[baseline] dataset=susy_binary_200000 seed=42 model=rulefit budget=b200: done (1468.57s), progress 29/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=101 model=rulefit budget=b200: start
+[baseline] dataset=susy_binary_200000 seed=101 model=rulefit budget=b200: done (1432.10s), progress 30/6, eta~0.0m
+written: D:\Sasha\deep-neuro-fuzzy\compact_stable_kafn\paper_tables\interpretable_baselines_q1
+[part] dataset=susy_binary_200000 budget=200 done  2026-05-16 23:05:23
+[part] dataset=susy_binary_200000 budget=400 start 2026-05-16 23:05:23
+[baseline] dataset=susy_binary_200000 seed=7 model=rulefit budget=b400: start
+[baseline] dataset=susy_binary_200000 seed=7 model=rulefit budget=b400: done (13442.83s), progress 31/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=19 model=rulefit budget=b400: start
+[baseline] dataset=susy_binary_200000 seed=19 model=rulefit budget=b400: done (14104.16s), progress 32/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=23 model=rulefit budget=b400: start
+[baseline] dataset=susy_binary_200000 seed=23 model=rulefit budget=b400: done (14317.59s), progress 33/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=29 model=rulefit budget=b400: start
+[baseline] dataset=susy_binary_200000 seed=29 model=rulefit budget=b400: done (19597.49s), progress 34/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=42 model=rulefit budget=b400: start
+[baseline] dataset=susy_binary_200000 seed=42 model=rulefit budget=b400: done (13834.82s), progress 35/6, eta~0.0m
+[baseline] dataset=susy_binary_200000 seed=101 model=rulefit budget=b400: start
+[baseline] dataset=susy_binary_200000 seed=101 model=rulefit budget=b400: done (16510.31s), progress 36/6, eta~0.0m
+written: D:\Sasha\deep-neuro-fuzzy\compact_stable_kafn\paper_tables\interpretable_baselines_q1
+[part] dataset=susy_binary_200000 budget=400 done  2026-05-18 00:35:35
+[ok] all parts finished

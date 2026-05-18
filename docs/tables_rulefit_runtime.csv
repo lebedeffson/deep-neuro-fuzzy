@@ -1,0 +1,7 @@
+dataset,method,budget,seed,train_full_dictionary_sec,selection_sec,compact_refit_sec,test_inference_ms_per_sample,explanation_ms_per_sample,total_pipeline_sec
+breast_cancer,rulefit,100,mean_over_6_seeds,1.033886154492696,,,,,1.033886154492696
+breast_cancer,rulefit,200,mean_over_6_seeds,1.2029238939285278,,,,,1.2029238939285278
+breast_cancer,rulefit,400,mean_over_6_seeds,1.3230012655258179,,,,,1.3230012655258179
+susy_binary_200000,rulefit,100,mean_over_6_seeds,388.54804082711536,,,,,388.54804082711536
+susy_binary_200000,rulefit,200,mean_over_6_seeds,1362.2977529764175,,,,,1362.2977529764175
+susy_binary_200000,rulefit,400,mean_over_5_seeds,15059.375550365448,,,,,15059.375550365448

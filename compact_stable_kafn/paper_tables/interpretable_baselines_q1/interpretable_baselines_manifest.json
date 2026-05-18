@@ -1,0 +1,20 @@
+{
+  "datasets": [
+    "susy_binary_200000"
+  ],
+  "seeds": [
+    7,
+    19,
+    23,
+    29,
+    42,
+    101
+  ],
+  "rulefit_budgets": [
+    400
+  ],
+  "rows_per_run": 36,
+  "rows_summary": 6,
+  "rows_status": 0,
+  "updated_at": "2026-05-18T00:35:34"
+}
