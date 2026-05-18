@@ -1,0 +1,13 @@
+block,dataset,budget,metric,value,support
+lr_topk_control,covtype_binary_20000,100,f1_delta_budget_prune_minus_lr_topk,0.0181,budget_prune=0.7785; lr_topk=0.7604
+lr_topk_control,covtype_binary_20000,200,f1_delta_budget_prune_minus_lr_topk,0.0246,budget_prune=0.7889; lr_topk=0.7644
+lr_topk_control,covtype_binary_20000,400,f1_delta_budget_prune_minus_lr_topk,0.0256,budget_prune=0.8044; lr_topk=0.7789
+stable_budget_prune_proxy,covtype_binary_20000,100,jaccard_gain_and_importance_retention,0.2189,current_jaccard=0.2887; stable_jaccard=0.5076; retention=0.6997
+stable_budget_prune_proxy,covtype_binary_20000,200,jaccard_gain_and_importance_retention,0.2345,current_jaccard=0.3939; stable_jaccard=0.6284; retention=0.7715
+stable_budget_prune_proxy,covtype_binary_20000,400,jaccard_gain_and_importance_retention,0.1913,current_jaccard=0.6384; stable_jaccard=0.8296; retention=0.9284
+runtime_context,breast_cancer,100,runtime_context_not_strict_speed_claim,0.0622,compact_kafn_pipeline=16.6s; rulefit=1.0s
+runtime_context,breast_cancer,200,runtime_context_not_strict_speed_claim,0.0715,compact_kafn_pipeline=16.8s; rulefit=1.2s
+runtime_context,breast_cancer,400,runtime_context_not_strict_speed_claim,0.0843,compact_kafn_pipeline=15.7s; rulefit=1.3s
+runtime_context,susy_binary_200000,100,runtime_context_not_strict_speed_claim,14.3482,compact_kafn_pipeline=27.1s; rulefit=388.5s
+runtime_context,susy_binary_200000,200,runtime_context_not_strict_speed_claim,52.9263,compact_kafn_pipeline=25.7s; rulefit=1362.3s
+runtime_context,susy_binary_200000,400,runtime_context_not_strict_speed_claim,588.1707,compact_kafn_pipeline=26.0s; rulefit=15301.2s
