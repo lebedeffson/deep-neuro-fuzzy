@@ -43,3 +43,15 @@ Added explicit limitation snippet:
 - `docs/rule_jaccard_production_limitation_snippet.md`
 
 Core message: low rule-level Jaccard at tight budgets is expected under representative swapping; for exact rule-ID stability, use larger budgets or avoid aggressive pruning.
+
+## 7) Final minor reviewer polish (v34)
+Added ready-to-paste snippets for last-mile reviewer comments:
+- `docs/q1_minor_reviewer_polish_snippets.md`
+- `docs/routed_kafn_compact_architecture_snippet.md`
+
+Covers:
+- explicit `LORO-BCE` small-budget limitation,
+- fidelity/agreement comparison wording,
+- `B=25` meta-cluster trade-off wording,
+- RuleFit supplementary config disclosure wording,
+- fixed repository-tag reproducibility wording.
