@@ -1,0 +1,4 @@
+architecture,dataset,method,budget,corr_threshold_for_meta,f1,rule_jaccard,meta_cluster_jaccard,mean_pairwise_corr,effective_rules
+ANFIS (standalone),Breast Cancer,Budget-Prune,100,0.90,0.9793413985549083,0.3486590038314176,0.7731481481481483,0.7221325662097832,100.0
+ANFIS (standalone),Breast Cancer,LORO-BCE,100,0.90,0.9793413985549083,0.3471395774933091,0.7592592592592592,0.7590326031182263,100.0
+ANFIS (standalone),Breast Cancer,C-Prune (tau=0.90),100,0.90,0.9816721776098252,0.11287950664136621,0.6990740740740741,0.48295773940826053,39.0
