@@ -46,6 +46,23 @@ If `|rho_rs| >= tau`, then
 
 This is a formal justification for clustering rules by activation correlation; it is not a direct F1 guarantee.
 
+## Proposition 5 (Representative replacement contribution bound)
+Let rule `r` be replaced by representative `s` in a cluster.
+For any sample `x`:
+
+`|theta_r h_r(x) - theta_s h_s(x)| <= |theta_r| |h_r(x)-h_s(x)| + |theta_r-theta_s| |h_s(x)|`.
+
+If `|theta_r| <= W`, `|theta_s| <= W`, and `|h_s(x)| <= Hmax`, then
+
+`|theta_r h_r(x) - theta_s h_s(x)| <= W |h_r(x)-h_s(x)| + |theta_r-theta_s| Hmax`.
+
+Averaging over validation:
+
+`E_val |theta_r h_r - theta_s h_s| <= W E_val |h_r-h_s| + |theta_r-theta_s| Hmax`.
+
+Combined with Proposition 4 (high-correlation profiles imply small normalized profile distance), this gives a controlled
+approximation argument for representative selection inside clusters.
+
 ## Scope statement
 These are deviation-control and stability-motivation results.  
 They do **not** claim global optimality of Cluster-Prune for F1.
