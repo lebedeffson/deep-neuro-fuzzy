@@ -1,0 +1,4 @@
+dataset,seed,n_rules,f1,roc_auc,pr_auc,artifact_path
+breast_cancer,19,192,0.9726027397260274,0.994212962962963,0.9961381295919498,compact_stable_kafn/paper_tables/_tmp_plain_anfis_artifacts_r192/v18_h_artifacts_breast_cancer_seed19.npz
+breast_cancer,23,192,0.9793103448275862,0.9923941798941799,0.9953543469446435,compact_stable_kafn/paper_tables/_tmp_plain_anfis_artifacts_r192/v18_h_artifacts_breast_cancer_seed23.npz
+breast_cancer,29,192,0.9793103448275862,0.9986772486772487,0.9992515432098764,compact_stable_kafn/paper_tables/_tmp_plain_anfis_artifacts_r192/v18_h_artifacts_breast_cancer_seed29.npz

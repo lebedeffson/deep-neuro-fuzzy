@@ -154,6 +154,15 @@ from .stable_budget_prune import (
     top_budget_indices,
     weight_only_indices,
 )
+from .lofo_f1_prune import (
+    LofoF1Scores,
+    bootstrap_lofo_f1_scores,
+    jaccard_similarity,
+    lofo_f1_scores,
+    logits_from_rules,
+    top_bootstrap_lofo_f1_indices,
+    top_lofo_f1_indices,
+)
 from .stages import ConnectedFuzzyBlock, FuzzyStage
 from .trainer import (
     EpochRecord,
@@ -199,6 +208,7 @@ __all__ = [
     "HiddenRuleContribution",
     "HiddenRulePathContribution",
     "LayerPruningReport",
+    "LofoF1Scores",
     "BlockExplanation",
     "ConceptExemplar",
     "PathRuleContribution",
@@ -279,6 +289,8 @@ __all__ = [
     "membership_overlap_penalty",
     "load_model_bundle",
     "load_model_config_json",
+    "lofo_f1_scores",
+    "logits_from_rules",
     "initialize_decision_layer_from_samples",
     "initialize_transparent_block_from_samples",
     "regression_metrics",
@@ -306,6 +318,10 @@ __all__ = [
     "sparse_logistic_indices",
     "stable_budget_prune",
     "stable_budget_scores",
+    "bootstrap_lofo_f1_scores",
+    "jaccard_similarity",
+    "top_bootstrap_lofo_f1_indices",
+    "top_lofo_f1_indices",
     "top_budget_indices",
     "weighted_rule_length_penalty",
     "weight_only_indices",

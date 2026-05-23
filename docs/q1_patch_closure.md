@@ -30,3 +30,16 @@ Added explicit positioning snippet:
 - `docs/l1lr_vs_cprune_discussion_snippet.md`
 
 Core message: Cluster-Prune is not universal best-F1, it is redundancy-aware post-training rule-vocabulary reduction with functional-group analysis.
+
+## 5) Runtime context for Cluster-Prune
+Added explicit runtime table (selection stages):
+- `docs/tables_c_prune_runtime.csv`
+- `docs/tables_c_prune_runtime.md`
+
+This closes the "no runtime numbers for Cluster-Prune" reviewer concern.
+
+## 6) Rule-level stability limitation (production wording)
+Added explicit limitation snippet:
+- `docs/rule_jaccard_production_limitation_snippet.md`
+
+Core message: low rule-level Jaccard at tight budgets is expected under representative swapping; for exact rule-ID stability, use larger budgets or avoid aggressive pruning.
